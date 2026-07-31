@@ -15,8 +15,8 @@ macOS or Windows application.
 - mathematical symbols converted to LaTeX blocks
 - headings, lists, emphasis, links, footnotes, and references retained
 - password-protected PDFs
-- a block editor for reordering, correcting, retyping, or removing content
-- a ZIP export containing one `.md` document and its figure files
+- one continuous Markdown editor instead of a block-review workflow
+- direct `.md` download, or a ZIP containing Markdown and extracted figures
 
 ## Privacy
 
@@ -64,8 +64,8 @@ when a version tag beginning with `v` is pushed.
 ## Accuracy notes
 
 PDF is a page-painting format rather than a semantic document format. The
-converter uses deterministic layout heuristics and OCR, then marks uncertain
-blocks for review. Complicated merged-cell tables, multi-panel figures,
+converter uses deterministic layout heuristics and OCR, then presents one
+continuous Markdown document. Complicated merged-cell tables, multi-panel figures,
 specialized mathematical notation, and unusual page layouts may need manual
 correction. Representative papers are the best way to improve these heuristics.
 

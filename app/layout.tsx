@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
-import "katex/dist/katex.min.css";
 
 const title = "PDF2MD Converter — Private PDF to Markdown";
 const description =

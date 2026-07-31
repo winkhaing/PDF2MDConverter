@@ -5,7 +5,6 @@ import {
   mergeFlowingParagraphs,
   safeBaseName,
 } from "../src/lib/markdown.ts";
-import { transformPreviewUrl } from "../src/lib/preview-urls.ts";
 
 function paragraph(markdown, page) {
   return {
@@ -39,19 +38,4 @@ test("joins flowing paragraphs across pages without losing confidence", () => {
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0].markdown, "The finding continues on the next page.");
   assert.equal(blocks[0].confidence, 0.62);
-});
-
-test("preview allows local figures and safe links without remote image loads", () => {
-  const images = new Map([["images/figure-001.png", "blob:local-figure"]]);
-
-  assert.equal(
-    transformPreviewUrl("images/figure-001.png", "src", images),
-    "blob:local-figure",
-  );
-  assert.equal(transformPreviewUrl("https://example.com/tracker.png", "src", images), undefined);
-  assert.equal(
-    transformPreviewUrl("https://example.com/paper", "href", images),
-    "https://example.com/paper",
-  );
-  assert.equal(transformPreviewUrl("javascript:alert(1)", "href", images), "");
 });

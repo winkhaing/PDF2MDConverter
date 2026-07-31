@@ -25,9 +25,11 @@ test("server-renders the finished converter", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /PDF2MD Converter/);
-  assert.match(html, /Turn dense PDFs into/);
-  assert.match(html, /Your file never leaves this device/);
+  assert.match(html, /Choose a PDF/);
+  assert.match(html, /Get one Markdown file/);
+  assert.match(html, /Your PDF stays on this device/);
   assert.match(html, /Choose PDF/);
+  assert.doesNotMatch(html, /Review extracted blocks|Document structure/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
@@ -45,7 +47,7 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
     readFile(new URL("README.md", root), "utf8"),
   ]);
   assert.match(packageJson, /"name": "pdf2md-converter"/);
-  assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.doesNotMatch(packageJson, /react-loading-skeleton|react-markdown|katex/);
   assert.match(layout, /og\.png/);
   assert.match(readme, /processed in the browser or desktop webview/);
 });
