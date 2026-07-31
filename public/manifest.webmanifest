@@ -1,0 +1,17 @@
+{
+  "name": "PDF2MD Converter",
+  "short_name": "PDF2MD",
+  "description": "Private, local PDF to Markdown conversion for research papers.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f0e7",
+  "theme_color": "#17372d",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
