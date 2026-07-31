@@ -41,13 +41,18 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
     access(new URL("src-tauri/tauri.conf.json", root)),
     access(new URL("LICENSE", root)),
   ]);
-  const [packageJson, layout, readme] = await Promise.all([
+  const [packageJson, layout, readme, converterApp] = await Promise.all([
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("README.md", root), "utf8"),
+    readFile(new URL("src/components/ConverterApp.tsx", root), "utf8"),
   ]);
   assert.match(packageJson, /"name": "pdf2md-converter"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton|react-markdown|katex/);
   assert.match(layout, /og\.png/);
   assert.match(readme, /processed in the browser or desktop webview/);
+  assert.doesNotMatch(
+    converterApp,
+    /await import\(["'](?:jszip|@\/src\/lib\/pdf-converter)["']\)/,
+  );
 });

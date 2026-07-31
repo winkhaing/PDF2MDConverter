@@ -42,7 +42,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#f4f0e7",
+  themeColor: "#f5f7fb",
 };
 
 export default function RootLayout({

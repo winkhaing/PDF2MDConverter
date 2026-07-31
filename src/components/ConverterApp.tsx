@@ -13,8 +13,10 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { blocksToMarkdown, safeBaseName } from "@/src/lib/markdown";
+import { convertPdf } from "@/src/lib/pdf-converter";
 import {
   PasswordRequiredError,
   type ConvertedDocument,
@@ -35,23 +37,15 @@ function AppMark() {
   );
 }
 
-function Header({ onReset }: { onReset?: () => void }) {
+function Header() {
   return (
     <header className="site-header">
-      <a
-        className="brand"
-        href="#main-content"
-        onClick={(event) => {
-          if (!onReset) return;
-          event.preventDefault();
-          onReset();
-        }}
-      >
+      <a className="brand" href="#main-content" translate="no">
         <AppMark />
         <span>PDF2MD</span>
       </a>
       <span className="local-pill">
-        <ShieldCheck size={15} />
+        <ShieldCheck size={15} aria-hidden="true" />
         Private & local
       </span>
     </header>
@@ -100,12 +94,13 @@ function UploadView({
           <input
             ref={inputRef}
             type="file"
+            name="pdf-file"
             accept="application/pdf,.pdf"
             onChange={(event) => acceptFiles(event.target.files)}
             aria-label="Choose a PDF file"
           />
           <span className="upload-icon" aria-hidden="true">
-            <Upload size={25} />
+            <Upload size={25} aria-hidden="true" />
           </span>
           <h2>Drop your PDF here</h2>
           <p>or select it from your device</p>
@@ -117,7 +112,7 @@ function UploadView({
             Choose PDF
           </button>
           <span className="privacy-note">
-            <LockKeyhole size={13} />
+            <LockKeyhole size={13} aria-hidden="true" />
             Your PDF stays on this device
           </span>
         </div>
@@ -138,11 +133,11 @@ function ProcessingView({
   return (
     <main className="simple-page" id="main-content">
       <section className="processing-card" aria-live="polite">
-        <RefreshCw className="spin processing-icon" size={34} />
+        <RefreshCw className="spin processing-icon" size={34} aria-hidden="true" />
         <span className="eyebrow">Converting locally</span>
-        <h1>{progress.message}</h1>
+        <h1>{progress.message.replace(/[.…]+$/, "")}…</h1>
         <div className="file-chip">
-          <FileText size={17} />
+          <FileText size={17} aria-hidden="true" />
           <span>{file.name}</span>
           <small>{formatBytes(file.size)}</small>
         </div>
@@ -202,7 +197,7 @@ function PasswordDialog({
           onSubmit(password);
         }}
       >
-        <LockKeyhole className="dialog-icon" size={24} />
+        <LockKeyhole className="dialog-icon" size={24} aria-hidden="true" />
         <h2 id="password-dialog-title">Password required</h2>
         <p>
           {incorrect
@@ -246,6 +241,20 @@ function ResultView({
   const [copied, setCopied] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const hasImages = document.images.length > 0;
+  const normalizedTitle = document.title.trim();
+  const displayTitle = /[\p{L}\p{N}].*[\p{L}\p{N}]/u.test(normalizedTitle)
+    ? normalizedTitle
+    : safeBaseName(document.sourceName);
+
+  useEffect(() => {
+    const warnAboutUnsavedEdits = (event: BeforeUnloadEvent) => {
+      if (markdown === initialMarkdown) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnAboutUnsavedEdits);
+    return () => window.removeEventListener("beforeunload", warnAboutUnsavedEdits);
+  }, [initialMarkdown, markdown]);
 
   const downloadResult = async () => {
     setIsDownloading(true);
@@ -256,7 +265,6 @@ function ResultView({
       let filename: string;
 
       if (hasImages) {
-        const { default: JSZip } = await import("jszip");
         const zip = new JSZip();
         zip.file(`${baseName}.md`, markdown);
         for (const image of document.images) zip.file(image.filename, image.blob);
@@ -304,10 +312,10 @@ function ResultView({
       <section className="result-card">
         <div className="result-header">
           <div className="result-heading">
-            <span className="complete-mark"><Check size={17} /></span>
+            <span className="complete-mark"><Check size={17} aria-hidden="true" /></span>
             <div>
               <span className="eyebrow">Conversion complete</span>
-              <h1>{document.title}</h1>
+              <h1>{displayTitle}</h1>
               <p>
                 {document.stats.pages} pages · {document.stats.words.toLocaleString()} words
                 {hasImages ? ` · ${document.images.length} images` : ""}
@@ -316,7 +324,7 @@ function ResultView({
           </div>
           <div className="result-actions">
             <button className="secondary-button" type="button" onClick={copyMarkdown}>
-              {copied ? <Check size={15} /> : <Clipboard size={15} />}
+              {copied ? <Check size={15} aria-hidden="true" /> : <Clipboard size={15} aria-hidden="true" />}
               {copied ? "Copied" : "Copy"}
             </button>
             <button
@@ -325,7 +333,7 @@ function ResultView({
               onClick={downloadResult}
               disabled={isDownloading}
             >
-              {isDownloading ? <RefreshCw className="spin" size={15} /> : hasImages ? <FileArchive size={15} /> : <Download size={15} />}
+              {isDownloading ? <RefreshCw className="spin" size={15} aria-hidden="true" /> : hasImages ? <FileArchive size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}
               {isDownloading ? "Preparing…" : hasImages ? "Download ZIP" : "Download Markdown"}
             </button>
           </div>
@@ -335,7 +343,7 @@ function ResultView({
           <div className={`result-notice ${notice.type}`} role={notice.type === "error" ? "alert" : "status"}>
             <span>{notice.message}</span>
             <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss message">
-              <X size={14} />
+              <X size={14} aria-hidden="true" />
             </button>
           </div>
         ) : null}
@@ -409,7 +417,6 @@ export function ConverterApp() {
     setProgress({ phase: "opening", page: 0, total: 0, percent: 1, message: "Opening PDF" });
 
     try {
-      const { convertPdf } = await import("@/src/lib/pdf-converter");
       const result = await convertPdf(
         selectedFile,
         password,
@@ -445,7 +452,7 @@ export function ConverterApp() {
   return (
     <div className="app">
       <a className="skip-link" href="#main-content">Skip to main content</a>
-      <Header onReset={document ? discardDocument : progress ? reset : undefined} />
+      <Header />
       {document ? (
         <ResultView document={document} onReset={discardDocument} />
       ) : progress && file ? (
@@ -459,10 +466,10 @@ export function ConverterApp() {
           />
           {error ? (
             <div className="error-toast" role="alert">
-              <AlertTriangle size={17} />
+              <AlertTriangle size={17} aria-hidden="true" />
               <span>{error}</span>
               <button type="button" onClick={() => setError("")} aria-label="Dismiss error">
-                <X size={15} />
+                <X size={15} aria-hidden="true" />
               </button>
             </div>
           ) : null}
@@ -476,7 +483,7 @@ export function ConverterApp() {
         />
       ) : null}
       <footer className="site-footer">
-        <LockKeyhole size={12} /> Local conversion · English PDFs
+        <LockKeyhole size={12} aria-hidden="true" /> Local conversion · English PDFs
       </footer>
     </div>
   );
