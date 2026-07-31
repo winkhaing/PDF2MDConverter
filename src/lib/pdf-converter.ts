@@ -1,4 +1,4 @@
-import { mergeFlowingParagraphs, safeBaseName } from "./markdown";
+import { mergeFlowingParagraphs, safeBaseName } from "./markdown.ts";
 import {
   PasswordRequiredError,
   type BlockKind,
@@ -6,7 +6,7 @@ import {
   type ConversionProgress,
   type DocumentBlock,
   type ExtractedImage,
-} from "./types";
+} from "./types.ts";
 import type { PDFPageProxy } from "pdfjs-dist";
 
 interface TextLine {
@@ -39,6 +39,8 @@ const LIST_PATTERN = /^(?:[-•▪◦]|\d+[.)]|[a-z][.)])\s+/i;
 const PAGE_NUMBER_PATTERN = /^(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?$/i;
 const REFERENCE_PATTERN = /^(?:references|bibliography)$/i;
 const MATH_SYMBOL_PATTERN = /[=∑∫√±≤≥≈∞α-ωΑ-Ω^_]/g;
+const LEGAL_FOOTER_PATTERN = /(?:see front matter|copyright|published by elsevier)/i;
+const DECORATIVE_GLYPH_PATTERN = /^[■□▪◆●]+$/;
 
 function normalizeRepeatedLine(text: string): string {
   return text
@@ -46,6 +48,15 @@ function normalizeRepeatedLine(text: string): string {
     .replace(/\d+/g, "#")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function annotationText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value && typeof value === "object") {
+    const candidate = value as { str?: unknown };
+    if (typeof candidate.str === "string") return candidate.str.trim();
+  }
+  return "";
 }
 
 function median(values: number[]): number {
@@ -73,7 +84,7 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-function textItemsToLines(
+export function textItemsToLines(
   items: Array<Record<string, unknown>>,
   viewport: { transform: number[]; width: number; height: number },
   pdfjs: {
@@ -125,77 +136,202 @@ function textItemsToLines(
     }
   }
 
-  return grouped.map((group) => {
+  return grouped.flatMap((group) => {
     group.sort((a, b) => a.x - b.x);
     const fontSize = median(group.map((run) => run.fontSize));
-    let text = "";
-    let right = group[0].x;
+    const columnGapThreshold = Math.max(
+      12,
+      Math.min(viewport.width * 0.03, fontSize * 1.8),
+    );
+    const segments: typeof runs[] = [];
 
     for (const run of group) {
-      const gap = run.x - right;
-      if (text && gap > Math.max(9, fontSize * 1.15)) text += "   ";
-      else if (text && gap > Math.max(2.5, fontSize * 0.22)) text += " ";
-      text += run.text;
-      right = Math.max(right, run.x + run.width);
+      const current = segments.at(-1);
+      const right = current
+        ? Math.max(...current.map((value) => value.x + value.width))
+        : -Infinity;
+      if (!current || run.x - right > columnGapThreshold) {
+        segments.push([run]);
+      } else {
+        current.push(run);
+      }
     }
 
-    const x = Math.min(...group.map((run) => run.x));
-    const maxX = Math.max(...group.map((run) => run.x + run.width));
-    return {
-      text: text.replace(/ {4,}/g, "   ").trim(),
-      x,
-      y: median(group.map((run) => run.y)),
-      width: maxX - x,
-      height: Math.max(...group.map((run) => run.height)),
-      fontSize,
-      fontName: group.map((run) => run.fontName).join(" "),
-      page: pageNumber,
-    };
+    return segments.map((segment) => {
+      let text = "";
+      let right = segment[0].x;
+      for (const run of segment) {
+        const gap = run.x - right;
+        if (text && gap > Math.max(9, fontSize * 1.15)) text += "   ";
+        else if (text && gap > Math.max(2.5, fontSize * 0.22)) text += " ";
+        text += run.text;
+        right = Math.max(right, run.x + run.width);
+      }
+
+      const x = Math.min(...segment.map((run) => run.x));
+      const maxX = Math.max(...segment.map((run) => run.x + run.width));
+      return {
+        text: text.replace(/ {4,}/g, "   ").trim(),
+        x,
+        y: median(segment.map((run) => run.y)),
+        width: maxX - x,
+        height: Math.max(...segment.map((run) => run.height)),
+        fontSize: median(segment.map((run) => run.fontSize)),
+        fontName: segment.map((run) => run.fontName).join(" "),
+        page: pageNumber,
+      };
+    });
   });
 }
 
-function orderLines(lines: TextLine[], pageWidth: number): TextLine[] {
+function medianNearbyRightColumnStart(
+  lines: TextLine[],
+  middle: number,
+  y: number,
+  direction: "above" | "below",
+  maxDistance: number,
+): number | null {
+  const starts = lines
+    .filter((line) => {
+      const distance = direction === "above" ? y - line.y : line.y - y;
+      return line.x >= middle && distance >= 0 && distance <= maxDistance;
+    })
+    .sort((a, b) => Math.abs(a.y - y) - Math.abs(b.y - y))
+    .slice(0, 6)
+    .map((line) => line.x);
+  return starts.length >= 2 ? median(starts) : null;
+}
+
+interface LayoutTransition {
+  y: number;
+  splitX: number;
+}
+
+function layoutTransitions(
+  lines: TextLine[],
+  pageWidth: number,
+  pageHeight: number,
+): LayoutTransition[] {
+  const middle = pageWidth / 2;
+  const bodyFontSize = median(lines.map((line) => line.fontSize));
+  const maxDistance = pageHeight * 0.36;
+  return lines
+    .filter(
+      (line) =>
+        line.x < pageWidth * 0.2 &&
+        line.width < pageWidth * 0.38 &&
+        line.text.length < 80 &&
+        line.fontSize > bodyFontSize * 1.12,
+    )
+    .map((line) => {
+      const above = medianNearbyRightColumnStart(
+        lines,
+        middle,
+        line.y,
+        "above",
+        maxDistance,
+      );
+      const below = medianNearbyRightColumnStart(
+        lines,
+        middle,
+        line.y,
+        "below",
+        maxDistance,
+      );
+      if (
+        above !== null &&
+        below !== null &&
+        above - below > pageWidth * 0.09
+      ) {
+        return {
+          y: line.y - Math.max(1, line.height * 0.25),
+          splitX: (above + below) / 2,
+        };
+      }
+      return null;
+    })
+    .filter((transition): transition is LayoutTransition => transition !== null);
+}
+
+function orderRegion(lines: TextLine[], pageWidth: number): TextLine[] {
+  const sorted = [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
+  if (sorted.length < 4) return sorted;
+  const middle = pageWidth / 2;
+  const left = sorted.filter((line) => line.x < middle);
+  const right = sorted.filter((line) => line.x >= middle);
+  const twoColumns =
+    left.length >= 2 &&
+    right.length >= 2 &&
+    left.length >= sorted.length * 0.18 &&
+    right.length >= sorted.length * 0.12;
+  if (!twoColumns) return sorted;
+  return [
+    ...left.sort((a, b) => a.y - b.y || a.x - b.x),
+    ...right.sort((a, b) => a.y - b.y || a.x - b.x),
+  ];
+}
+
+export function orderLines(
+  lines: TextLine[],
+  pageWidth: number,
+  pageHeight = Math.max(...lines.map((line) => line.y + line.height), 1),
+): TextLine[] {
   if (lines.length < 8) {
     return [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
   }
 
-  const middle = pageWidth / 2;
-  const gutter = pageWidth * 0.055;
-  const left = lines.filter((line) => line.x + line.width < middle - gutter);
-  const right = lines.filter((line) => line.x > middle + gutter);
-  const twoColumns =
-    left.length >= lines.length * 0.24 && right.length >= lines.length * 0.24;
-  if (!twoColumns) return [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
+  const segments: TextLine[][] = [];
+  let remaining = [...lines];
+  for (const transition of layoutTransitions(
+    lines,
+    pageWidth,
+    pageHeight,
+  ).sort((a, b) => a.y - b.y)) {
+    const before = remaining.filter(
+      (line) => line.y < transition.y || line.x >= transition.splitX,
+    );
+    if (before.length) segments.push(before);
+    const beforeSet = new Set(before);
+    remaining = remaining.filter((line) => !beforeSet.has(line));
+  }
+  if (remaining.length) segments.push(remaining);
+
+  return segments.flatMap((segment) => orderLineSegment(segment, pageWidth));
+}
+
+function orderLineSegment(
+  lines: TextLine[],
+  pageWidth: number,
+): TextLine[] {
+  if (lines.length < 4) {
+    return [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
+  }
 
   const fullWidth = lines
     .filter(
       (line) =>
-        line.x < middle - gutter &&
-        line.x + line.width > middle + gutter,
+        line.width >= pageWidth * 0.62 &&
+        line.x < pageWidth * 0.22 &&
+        line.x + line.width > pageWidth * 0.72,
     )
     .sort((a, b) => a.y - b.y);
+  const fullWidthSet = new Set(fullWidth);
+  const events = fullWidth.map((line) => ({ y: line.y, line }));
   const ordered: TextLine[] = [];
   let regionTop = -Infinity;
 
-  for (const separator of [...fullWidth, null]) {
-    const regionBottom = separator?.y ?? Infinity;
+  for (const event of [...events, null]) {
+    const regionBottom = event?.y ?? Infinity;
     const region = lines.filter(
       (line) =>
         line.y >= regionTop &&
         line.y < regionBottom &&
-        !fullWidth.includes(line),
+        !fullWidthSet.has(line),
     );
-    ordered.push(
-      ...region
-        .filter((line) => line.x < middle)
-        .sort((a, b) => a.y - b.y || a.x - b.x),
-      ...region
-        .filter((line) => line.x >= middle)
-        .sort((a, b) => a.y - b.y || a.x - b.x),
-    );
-    if (separator) {
-      ordered.push(separator);
-      regionTop = separator.y + separator.height * 0.5;
+    ordered.push(...orderRegion(region, pageWidth));
+    if (event) {
+      ordered.push(event.line);
+      regionTop = event.line.y + event.line.height * 0.5;
     }
   }
   return ordered;
@@ -206,7 +342,10 @@ function removeHeadersAndFooters(pages: RawPage[]): RawPage[] {
     return pages.map((page) => ({
       ...page,
       lines: page.lines.filter(
-        (line) => !PAGE_NUMBER_PATTERN.test(line.text.trim()),
+        (line) =>
+          !PAGE_NUMBER_PATTERN.test(line.text.trim()) &&
+          !LEGAL_FOOTER_PATTERN.test(line.text) &&
+          !DECORATIVE_GLYPH_PATTERN.test(line.text.trim()),
       ),
     }));
   }
@@ -241,7 +380,9 @@ function removeHeadersAndFooters(pages: RawPage[]): RawPage[] {
       if (!isMarginLine) return true;
       return (
         !repeated.has(normalizeRepeatedLine(line.text)) &&
-        !PAGE_NUMBER_PATTERN.test(line.text.trim())
+        !PAGE_NUMBER_PATTERN.test(line.text.trim()) &&
+        !LEGAL_FOOTER_PATTERN.test(line.text) &&
+        !DECORATIVE_GLYPH_PATTERN.test(line.text.trim())
       );
     }),
   }));
@@ -344,15 +485,16 @@ function classifyLine(
   return "paragraph";
 }
 
-function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
+export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
   const bodyFontSize = median(
     pages.flatMap((page) => page.lines.map((line) => line.fontSize)),
   );
   const blocks: DocumentBlock[] = [];
+  const annotationBlocks: DocumentBlock[] = [];
   let footnoteNumber = 1;
 
   for (const page of pages) {
-    const lines = orderLines(page.lines, page.width);
+    const lines = orderLines(page.lines, page.width, page.height);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       const tableRowCount = looksLikeTable(lines, index);
@@ -394,13 +536,42 @@ function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
       const previous = blocks.at(-1);
       const previousLine = lines[index - 1];
       const verticalGap = previousLine ? line.y - previousLine.y : Infinity;
+      const isNearbyContinuation =
+        previous?.page === page.page &&
+        verticalGap >= -bodyFontSize * 0.15 &&
+        verticalGap < bodyFontSize * 1.5;
       const canMerge =
         previous?.kind === "paragraph" &&
         kind === "paragraph" &&
-        previous.page === page.page &&
-        verticalGap >= -bodyFontSize * 0.15 &&
-        verticalGap < bodyFontSize * 1.9;
+        isNearbyContinuation;
       if (canMerge && previous) {
+        previous.markdown = previous.markdown.endsWith("-")
+          ? `${previous.markdown.slice(0, -1)}${markdown}`
+          : `${previous.markdown} ${markdown}`;
+        continue;
+      }
+      const canContinueAcrossColumn =
+        previous?.kind === "paragraph" &&
+        kind === "paragraph" &&
+        previous.page === page.page &&
+        previousLine &&
+        line.x > previousLine.x + page.width * 0.18 &&
+        line.y < previousLine.y - bodyFontSize * 0.45 &&
+        !/[.!?]["')\]]?$/.test(previousLine.text.trim()) &&
+        /^[a-z]/.test(line.text.trim());
+      if (canContinueAcrossColumn && previous) {
+        previous.markdown = previous.markdown.endsWith("-")
+          ? `${previous.markdown.slice(0, -1)}${markdown}`
+          : `${previous.markdown} ${markdown}`;
+        continue;
+      }
+      const canContinueList =
+        previous?.kind === "list" &&
+        kind === "paragraph" &&
+        isNearbyContinuation &&
+        previousLine &&
+        line.x >= previousLine.x - bodyFontSize * 0.5;
+      if (canContinueList && previous) {
         previous.markdown = previous.markdown.endsWith("-")
           ? `${previous.markdown.slice(0, -1)}${markdown}`
           : `${previous.markdown} ${markdown}`;
@@ -417,8 +588,9 @@ function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
     }
 
     for (const annotation of page.annotations) {
+      if (!annotation.text.trim()) continue;
       if (!blocks.some((block) => block.markdown.includes(annotation.url))) {
-        blocks.push({
+        annotationBlocks.push({
           id: crypto.randomUUID(),
           kind: "paragraph",
           markdown: `[${annotation.text || annotation.url}](${annotation.url})`,
@@ -428,7 +600,7 @@ function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
       }
     }
   }
-  return mergeFlowingParagraphs(blocks);
+  return [...mergeFlowingParagraphs(blocks), ...annotationBlocks];
 }
 
 async function renderPage(page: PDFPageProxy, scale = 1.6) {
@@ -719,7 +891,9 @@ export async function convertPdf(
       annotations: (annotations as Array<Record<string, unknown>>)
         .filter((annotation) => typeof annotation.url === "string")
         .map((annotation) => ({
-          text: String(annotation.titleObj ?? annotation.contentsObj ?? ""),
+          text:
+            annotationText(annotation.titleObj) ||
+            annotationText(annotation.contentsObj),
           url: String(annotation.url),
         })),
     });

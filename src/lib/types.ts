@@ -50,8 +50,11 @@ export interface ConversionProgress {
 }
 
 export class PasswordRequiredError extends Error {
-  constructor(public readonly incorrect = false) {
+  readonly incorrect: boolean;
+
+  constructor(incorrect = false) {
     super(incorrect ? "The PDF password is incorrect." : "This PDF needs a password.");
+    this.incorrect = incorrect;
     this.name = "PasswordRequiredError";
   }
 }
