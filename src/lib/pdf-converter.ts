@@ -19,7 +19,15 @@ interface TextLine {
   fontName: string;
   page: number;
   angle?: number;
-  parts?: Array<{ text: string; x: number; width: number }>;
+  scriptBaseline?: number;
+  sourceX?: number;
+  parts?: Array<{
+    text: string;
+    x: number;
+    y: number;
+    width: number;
+    fontSize: number;
+  }>;
 }
 
 interface RawPage {
@@ -39,12 +47,13 @@ const CAPTION_PATTERN = /^(?:figure|fig\.?)\s*\d+\s*[.:)|]\s*/i;
 const TABLE_CAPTION_PATTERN = /^table\s*\d+\s*[.:)|]\s*/i;
 const LIST_PATTERN = /^(?:[-•▪◦]|\(\d+\)|\d+[.)]|[a-z][.)])\s+/i;
 const ORDERED_LIST_PATTERN = /^(?:\((\d+)\)|(\d+)[.)])\s+/;
-const REFERENCE_ENTRY_PATTERN = /^(\d{1,3})(?:[.)]|\s{2,})\s*/;
+const REFERENCE_ENTRY_PATTERN = /^(\d{1,3})(?:[.)]|\s+)\s*/;
 const REFERENCE_CONTINUATION_ENTRY_PATTERN = /^(\d{1,3})(?:[.)]|\s+)\s*/;
 const TABLE_RECOMMENDATION_PATTERN = /^\((\d+)\)\s+/;
 const PAGE_NUMBER_PATTERN = /^(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?$/i;
 const REFERENCE_PATTERN = /^(?:references|bibliography)$/i;
-const MATH_SYMBOL_PATTERN = /[=∑∫√±≤≥≈∞α-ωΑ-Ω^_]/g;
+const MATH_SYMBOL_PATTERN = /[=≠∑∫√±≤≥≈∞×÷→↔α-ωΑ-Ω^_]/g;
+const STRONG_FORMULA_PATTERN = /(?:\s[=≠≤≥≈±×÷→↔]\s|[∑∫√∞]|\b[a-zA-Z]\s*=\s*[^,;]+)/;
 const LEGAL_FOOTER_PATTERN = /(?:see front matter|copyright|published by elsevier)/i;
 const DECORATIVE_GLYPH_PATTERN = /^[■□▪◆●]+$/;
 const JOURNAL_HEADER_PATTERN = /^(?:(?:\d+\s+)?value in health(?:\s+july\s+\d{4})?|ispor report(?:\s+\d+)?|july\s+\d{4})$/i;
@@ -67,6 +76,26 @@ function dedupeRepeatedPhrase(text: string): string {
   return clean.slice(0, middle) === clean.slice(middle)
     ? clean.slice(0, middle).trim()
     : clean;
+}
+
+function escapeInlineHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function mediaTitleMarkdown(text: string): string {
+  return `<u><em>${escapeInlineHtml(text.trim())}</em></u>`;
+}
+
+function plainMediaTitle(markdown: string): string {
+  return markdown
+    .replace(/<\/?(?:u|em)>/gi, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
 }
 
 function fontKey(line: TextLine): string {
@@ -131,6 +160,11 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
+function orientationDistance(left: number, right: number): number {
+  const difference = Math.abs(left - right) % 180;
+  return Math.min(difference, 180 - difference);
+}
+
 export function textItemsToLines(
   items: Array<Record<string, unknown>>,
   viewport: { transform: number[]; width: number; height: number },
@@ -148,6 +182,7 @@ export function textItemsToLines(
     fontSize: number;
     fontName: string;
     angle: number;
+    hasEOL: boolean;
   }> = [];
 
   for (const item of items) {
@@ -170,6 +205,7 @@ export function textItemsToLines(
       fontSize,
       fontName: String(item.fontName ?? ""),
       angle,
+      hasEOL: item.hasEOL === true,
     });
   }
 
@@ -179,7 +215,14 @@ export function textItemsToLines(
   for (const run of runs) {
     const current = grouped.at(-1);
     const tolerance = Math.max(3, run.fontSize * 0.38);
-    if (!current || Math.abs(current[0].y - run.y) > tolerance) {
+    const currentAngle = current
+      ? median(current.map((value) => value.angle))
+      : run.angle;
+    if (
+      !current ||
+      Math.abs(current[0].y - run.y) > tolerance ||
+      orientationDistance(currentAngle, run.angle) > 12
+    ) {
       grouped.push([run]);
     } else {
       current.push(run);
@@ -201,7 +244,23 @@ export function textItemsToLines(
       const markerCanJoin =
         /^(?:\d{1,3}[.)]?|[-•▪◦])$/.test(currentText) &&
         run.x - right < fontSize * 2;
-      if (!current || (run.x - right > columnGapThreshold && !markerCanJoin)) {
+      const previousRun = current?.at(-1);
+      const explicitLineEnd = previousRun?.hasEOL === true;
+      const unusuallyLargeGap =
+        run.x - right > Math.max(columnGapThreshold, fontSize * 2.2);
+      const currentFontSize = current
+        ? median(current.map((value) => value.fontSize))
+        : run.fontSize;
+      const mixedLayoutScale =
+        current &&
+        Math.max(currentFontSize, run.fontSize) /
+          Math.max(1, Math.min(currentFontSize, run.fontSize)) > 1.35 &&
+        run.x - right > Math.min(currentFontSize, run.fontSize) * 0.5;
+      if (
+        !current ||
+        ((explicitLineEnd || unusuallyLargeGap || mixedLayoutScale) &&
+          !markerCanJoin)
+      ) {
         segments.push([run]);
       } else {
         current.push(run);
@@ -213,8 +272,14 @@ export function textItemsToLines(
       let right = segment[0].x;
       for (const run of segment) {
         const gap = run.x - right;
-        if (text && gap > Math.max(9, fontSize * 1.15)) text += "   ";
-        else if (text && gap > Math.max(2.5, fontSize * 0.22)) text += " ";
+        if (
+          text &&
+          !/\s$/.test(text) &&
+          !/^\s/.test(run.text) &&
+          gap > Math.max(0.6, fontSize * 0.055)
+        ) {
+          text += " ";
+        }
         text += run.text;
         right = Math.max(right, run.x + run.width);
       }
@@ -222,7 +287,7 @@ export function textItemsToLines(
       const x = Math.min(...segment.map((run) => run.x));
       const maxX = Math.max(...segment.map((run) => run.x + run.width));
       return {
-        text: dedupeRepeatedPhrase(text.replace(/ {4,}/g, "   ").trim()),
+        text: dedupeRepeatedPhrase(text.replace(/\s+/g, " ").trim()),
         x,
         y: median(segment.map((run) => run.y)),
         width: maxX - x,
@@ -234,7 +299,9 @@ export function textItemsToLines(
         parts: segment.map((run) => ({
           text: run.text,
           x: run.x,
+          y: run.y,
           width: run.width,
+          fontSize: run.fontSize,
         })),
       };
     });
@@ -421,8 +488,8 @@ function orderLineSegment(
         (line.width >= pageWidth * 0.49 &&
           line.x < pageWidth * 0.3 &&
           line.x + line.width > pageWidth * 0.72) ||
-        CAPTION_PATTERN.test(line.text) ||
-        TABLE_CAPTION_PATTERN.test(line.text),
+        ((CAPTION_PATTERN.test(line.text) || TABLE_CAPTION_PATTERN.test(line.text)) &&
+          line.width >= pageWidth * 0.58),
     )
     .sort((a, b) => a.y - b.y);
   const fullWidthSet = new Set(fullWidth);
@@ -516,6 +583,8 @@ interface DocumentProfile {
 interface FigureRegion {
   caption: TextLine;
   captionBottom: number;
+  left: number;
+  right: number;
   top: number;
   bottom: number;
 }
@@ -643,12 +712,108 @@ function isBodyLine(line: TextLine, profile: DocumentProfile, pageWidth: number)
   );
 }
 
+function isLikelyArticleBodyLine(
+  line: TextLine,
+  profile: DocumentProfile,
+  pageWidth: number,
+): boolean {
+  return (
+    Math.abs(line.fontSize - profile.bodyFontSize) < profile.bodyFontSize * 0.24 &&
+    line.text.length > 28 &&
+    line.width > pageWidth * 0.22 &&
+    line.width < pageWidth * 0.56
+  );
+}
+
+function directionalFigureCluster(
+  page: RawPage,
+  caption: TextLine,
+  profile: DocumentProfile,
+  direction: "above" | "below",
+): TextLine[] {
+  const extent = captionExtent(page, caption, profile.bodyFontSize);
+  const captionCenter = caption.x + caption.width / 2;
+  const searchLeft = captionCenter < page.width * 0.4
+    ? page.width * 0.035
+    : captionCenter > page.width * 0.6
+      ? page.width * 0.4
+      : page.width * 0.035;
+  const searchRight = captionCenter < page.width * 0.4
+    ? page.width * 0.6
+    : captionCenter > page.width * 0.6
+      ? page.width * 0.965
+      : page.width * 0.965;
+  const candidates = page.lines
+    .filter((line) => {
+      if (extent.lines.includes(line) || !isHorizontal(line)) return false;
+      const centerX = line.x + line.width / 2;
+      if (centerX < searchLeft || centerX > searchRight) return false;
+      return direction === "above"
+        ? line.y + line.height < caption.y
+        : line.y > extent.bottom;
+    })
+    .sort((a, b) =>
+      direction === "above"
+        ? b.y - a.y || a.x - b.x
+        : a.y - b.y || a.x - b.x,
+    );
+  const maximumGap = Math.max(
+    profile.bodyFontSize * 4.35,
+    page.height * 0.07,
+  );
+  const cluster: TextLine[] = [];
+  let edge = direction === "above" ? caption.y : extent.bottom;
+
+  for (const line of candidates) {
+    const gap = direction === "above"
+      ? edge - (line.y + line.height)
+      : line.y - edge;
+    if (!cluster.length && gap > maximumGap * 1.6) return [];
+    if (cluster.length && gap > maximumGap) break;
+    cluster.push(line);
+    edge = direction === "above"
+      ? Math.min(edge, line.y)
+      : Math.max(edge, line.y + line.height);
+    if (
+      Math.max(...cluster.map((candidate) => candidate.y + candidate.height)) -
+        Math.min(...cluster.map((candidate) => candidate.y)) >
+      page.height * 0.68
+    ) {
+      break;
+    }
+  }
+  return cluster;
+}
+
+function figureClusterScore(lines: TextLine[], pageWidth: number): number {
+  if (lines.length < 3) return 0;
+  const xClusters: number[] = [];
+  for (const line of [...lines].sort((a, b) => a.x - b.x)) {
+    if (!xClusters.some((value) => Math.abs(value - line.x) < pageWidth * 0.035)) {
+      xClusters.push(line.x);
+    }
+  }
+  const shortRatio = lines.filter((line) => line.width < pageWidth * 0.22).length / lines.length;
+  const horizontalSpread =
+    (Math.max(...lines.map((line) => line.x + line.width)) -
+      Math.min(...lines.map((line) => line.x))) /
+    pageWidth;
+  const diagramLike = xClusters.length >= 3 && shortRatio >= 0.34;
+  return diagramLike
+    ? lines.length + xClusters.length * 4 + shortRatio * 18 + horizontalSpread * 12
+    : 0;
+}
+
 function detectFigureRegions(page: RawPage, profile: DocumentProfile): FigureRegion[] {
   const bodyLines = page.lines.filter((line) => isBodyLine(line, profile, page.width));
   return page.lines
     .filter((line) => CAPTION_PATTERN.test(line.text))
     .map((caption) => {
       const extent = captionExtent(page, caption, profile.bodyFontSize);
+      const aboveCluster = directionalFigureCluster(page, caption, profile, "above");
+      const belowCluster = directionalFigureCluster(page, caption, profile, "below");
+      const aboveScore = figureClusterScore(aboveCluster, page.width);
+      const belowScore = figureClusterScore(belowCluster, page.width);
       const previousBody = bodyLines
         .filter((line) => line.y + line.height < caption.y - profile.bodyFontSize * 0.4)
         .sort((a, b) => b.y - a.y)[0];
@@ -661,24 +826,82 @@ function detectFigureRegions(page: RawPage, profile: DocumentProfile): FigureReg
       const nextBoundary = nextBody?.y ?? page.height * 0.94;
       const beforeSpace = caption.y - priorBoundary;
       const afterSpace = nextBoundary - extent.bottom;
-      const figureIsAbove =
-        caption.y > page.height * 0.72 || beforeSpace > afterSpace * 1.15;
+      const figureIsAbove = aboveScore || belowScore
+        ? aboveScore >= belowScore
+        : caption.y > page.height * 0.72 || beforeSpace > afterSpace * 1.15;
       const padding = profile.bodyFontSize * 0.65;
-      return figureIsAbove
-        ? {
-            caption,
-            captionBottom: extent.bottom,
-            top: Math.max(page.height * 0.07, priorBoundary + padding),
-            bottom: caption.y - padding,
-          }
-        : {
-            caption,
-            captionBottom: extent.bottom,
-            top: extent.bottom + padding,
-            bottom: Math.min(page.height * 0.95, nextBoundary - padding),
-          };
-    })
-    .filter((region) => region.bottom - region.top > page.height * 0.055);
+      const selectedCluster = figureIsAbove ? aboveCluster : belowCluster;
+      const selectedScore = figureIsAbove ? aboveScore : belowScore;
+      let top = figureIsAbove
+        ? Math.max(page.height * 0.07, priorBoundary + padding)
+        : extent.bottom + padding;
+      let bottom = figureIsAbove
+        ? caption.y - padding
+        : Math.min(page.height * 0.95, nextBoundary - padding);
+      if (selectedScore && selectedCluster.length) {
+        const clusterTop = Math.max(
+          page.height * 0.07,
+          Math.min(...selectedCluster.map((line) => line.y)) - padding * 0.7,
+        );
+        const clusterBottom = Math.min(
+          page.height * 0.95,
+          Math.max(...selectedCluster.map((line) => line.y + line.height)) + padding * 0.45,
+        );
+        const boundedClusterTop = figureIsAbove
+          ? clusterTop
+          : Math.max(clusterTop, extent.bottom + padding * 0.25);
+        const boundedClusterBottom = figureIsAbove
+          ? Math.min(clusterBottom, caption.y - padding * 0.25)
+          : clusterBottom;
+        const clusterBodyLines = page.lines.filter((line) => {
+          const centerY = line.y + line.height / 2;
+          return centerY > boundedClusterTop && centerY < boundedClusterBottom &&
+            isLikelyArticleBodyLine(line, profile, page.width);
+        });
+        const captionCenter = caption.x + caption.width / 2;
+        const hasOppositeBodyColumn = captionCenter < page.width * 0.48
+          ? clusterBodyLines.filter((line) => line.x > page.width * 0.54).length >= 3
+          : captionCenter > page.width * 0.52
+            ? clusterBodyLines.filter(
+                (line) => line.x + line.width < page.width * 0.46,
+              ).length >= 3
+            : false;
+        if (bottom - top < page.height * 0.055 || hasOppositeBodyColumn) {
+          top = boundedClusterTop;
+          bottom = boundedClusterBottom;
+        }
+      }
+      if (bottom - top < page.height * 0.035) {
+        if (figureIsAbove) top = Math.max(page.height * 0.07, caption.y - page.height * 0.16);
+        else bottom = Math.min(page.height * 0.95, extent.bottom + page.height * 0.16);
+      }
+
+      let left = page.width * 0.055;
+      let right = page.width * 0.945;
+      const verticalBodyLines = page.lines.filter((line) => {
+        const centerY = line.y + line.height / 2;
+        return centerY > top && centerY < bottom &&
+          isLikelyArticleBodyLine(line, profile, page.width);
+      });
+      const captionCenter = caption.x + caption.width / 2;
+      if (captionCenter < page.width * 0.48) {
+        const opposite = verticalBodyLines.filter((line) => line.x > page.width * 0.54);
+        if (opposite.length >= 3) {
+          right = Math.min(right, Math.min(...opposite.map((line) => line.x)) - padding);
+        }
+      } else if (captionCenter > page.width * 0.52) {
+        const opposite = verticalBodyLines.filter(
+          (line) => line.x + line.width < page.width * 0.46,
+        );
+        if (opposite.length >= 3) {
+          left = Math.max(
+            left,
+            Math.max(...opposite.map((line) => line.x + line.width)) + padding,
+          );
+        }
+      }
+      return { caption, captionBottom: extent.bottom, left, right, top, bottom };
+    });
 }
 
 function detectTableRegions(page: RawPage, profile: DocumentProfile): TableRegion[] {
@@ -733,33 +956,49 @@ function detectTableRegions(page: RawPage, profile: DocumentProfile): TableRegio
 }
 
 function tableFragments(lines: TextLine[]): TextLine[] {
-  return lines.flatMap((line) =>
-    line.parts?.length
-      ? line.parts.map((part) => ({
-          ...line,
-          text: part.text,
-          x: part.x,
-          width: part.width,
-          parts: undefined,
-        }))
-      : [line],
-  );
+  return lines.flatMap((line) => {
+    if (!line.parts?.length) return [line];
+    const fragments: TextLine[] = [];
+    let sourceX = line.parts[0].x;
+    let right = line.parts[0].x;
+    for (const part of [...line.parts].sort((a, b) => a.x - b.x)) {
+      if (part.x - right > Math.max(2.5, line.fontSize * 0.22)) {
+        sourceX = part.x;
+      }
+      fragments.push({
+        ...line,
+        text: part.text,
+        x: part.x,
+        width: part.width,
+        fontSize: part.fontSize,
+        scriptBaseline: part.y + part.fontSize,
+        sourceX,
+        parts: undefined,
+      });
+      right = Math.max(right, part.x + part.width);
+    }
+    return fragments;
+  });
 }
 
 function clusterTableColumns(lines: TextLine[], pageWidth: number): number[] {
-  const clusters: Array<{ values: number[]; center: number }> = [];
+  const clusters: Array<{ values: number[]; center: number; rowBands: Set<number> }> = [];
   const tolerance = pageWidth * 0.022;
   for (const line of tableFragments(lines).sort((a, b) => a.x - b.x)) {
-    const cluster = clusters.find((candidate) => Math.abs(candidate.center - line.x) < tolerance);
+    const startX = line.sourceX ?? line.x;
+    const cluster = clusters.find((candidate) => Math.abs(candidate.center - startX) < tolerance);
+    const rowBand = Math.round(line.y / Math.max(4, pageWidth * 0.008));
     if (cluster) {
-      cluster.values.push(line.x);
+      cluster.values.push(startX);
+      cluster.rowBands.add(rowBand);
       cluster.center = median(cluster.values);
     } else {
-      clusters.push({ values: [line.x], center: line.x });
+      clusters.push({ values: [startX], center: startX, rowBands: new Set([rowBand]) });
     }
   }
   const ranked = clusters
-    .sort((a, b) => b.values.length - a.values.length)
+    .filter((cluster) => cluster.rowBands.size >= 2)
+    .sort((a, b) => b.rowBands.size - a.rowBands.size)
     .slice(0, 8)
     .sort((a, b) => a.center - b.center);
   const starts: number[] = [];
@@ -817,7 +1056,7 @@ function geometricTableMarkdown(
 ): string {
   const starts = clusterTableColumns(region.lines, page.width);
   if (starts.length < 2) {
-    return `**${caption.trim()}**\n\n${region.lines.map((line) => line.text).join(" ")}`;
+    return `${mediaTitleMarkdown(caption)}\n\n${region.lines.map((line) => line.text).join(" ")}`;
   }
   const rules = horizontalTableRules(page, region)
     .filter((value) => value > region.top && value < region.bottom)
@@ -847,29 +1086,108 @@ function geometricTableMarkdown(
   const rows = rowGroups.map((group) => {
     const cells = Array(starts.length).fill("") as string[];
     const cellRight = Array(starts.length).fill(-Infinity) as number[];
-    for (const line of tableFragments(group).sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const fragments = tableFragments(group);
+    for (const line of [...fragments].sort((a, b) => a.y - b.y || a.x - b.x)) {
       let column = 0;
       for (let index = 1; index < starts.length; index += 1) {
-        if (line.x >= (starts[index - 1] + starts[index]) / 2) column = index;
+        if ((line.sourceX ?? line.x) >= (starts[index - 1] + starts[index]) / 2) column = index;
       }
       const touchesPrevious = line.x - cellRight[column] < bodyFontSize * 0.12;
+      const fragmentText = scriptedTableFragment(line, fragments, bodyFontSize);
       cells[column] = cells[column]
         ? touchesPrevious
-          ? `${cells[column]}${line.text}`
-          : joinWrappedText(cells[column], line.text)
-        : line.text;
+          ? `${cells[column]}${fragmentText}`
+          : joinWrappedText(cells[column], fragmentText)
+        : fragmentText;
       cellRight[column] = Math.max(cellRight[column], line.x + line.width);
     }
     return cells.map(escapedTableCell);
   }).filter((row) => row.some(Boolean));
-  if (!rows.length) return `**${caption.trim()}**`;
+  if (!rows.length) return mediaTitleMarkdown(caption);
   return [
-    `**${caption.trim()}**`,
+    mediaTitleMarkdown(caption),
     "",
     `| ${rows[0].join(" | ")} |`,
     `| ${rows[0].map(() => "---").join(" | ")} |`,
     ...rows.slice(1).map((row) => `| ${row.join(" | ")} |`),
   ].join("\n");
+}
+
+const SUPERSCRIPT_CHARACTERS: Record<string, string> = {
+  "0": "⁰",
+  "1": "¹",
+  "2": "²",
+  "3": "³",
+  "4": "⁴",
+  "5": "⁵",
+  "6": "⁶",
+  "7": "⁷",
+  "8": "⁸",
+  "9": "⁹",
+  "+": "⁺",
+  "-": "⁻",
+  "=": "⁼",
+  "(": "⁽",
+  ")": "⁾",
+};
+
+const SUBSCRIPT_CHARACTERS: Record<string, string> = {
+  "0": "₀",
+  "1": "₁",
+  "2": "₂",
+  "3": "₃",
+  "4": "₄",
+  "5": "₅",
+  "6": "₆",
+  "7": "₇",
+  "8": "₈",
+  "9": "₉",
+  "+": "₊",
+  "-": "₋",
+  "=": "₌",
+  "(": "₍",
+  ")": "₎",
+};
+
+function scriptCharacters(
+  text: string,
+  characters: Record<string, string>,
+  tag: "sup" | "sub",
+): string {
+  const clean = text.trim();
+  const converted = [...clean].map((character) => characters[character] ?? "").join("");
+  const suffix = /\s$/.test(text) ? " " : "";
+  return (converted.length === clean.length
+    ? converted
+    : `<${tag}>${clean.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</${tag}>`) + suffix;
+}
+
+function scriptedTableFragment(
+  line: TextLine,
+  group: TextLine[],
+  bodyFontSize: number,
+): string {
+  if (line.fontSize >= bodyFontSize * 0.76 || line.text.trim().length > 8) {
+    return line.text;
+  }
+  const baseline = line.scriptBaseline ?? line.y + line.fontSize;
+  const peerBaselines = group
+    .filter(
+      (candidate) =>
+        candidate !== line &&
+        candidate.fontSize > line.fontSize * 1.25 &&
+        Math.abs(candidate.y - line.y) < bodyFontSize * 0.9,
+    )
+    .map((candidate) => candidate.scriptBaseline ?? candidate.y + candidate.fontSize);
+  if (!peerBaselines.length) return line.text;
+  const peerBaseline = median(peerBaselines);
+  if (baseline < peerBaseline - bodyFontSize * 0.12) {
+    return scriptCharacters(line.text, SUPERSCRIPT_CHARACTERS, "sup");
+  }
+  if (baseline > peerBaseline + bodyFontSize * 0.12) {
+    return scriptCharacters(line.text, SUBSCRIPT_CHARACTERS, "sub");
+  }
+  return line.text;
 }
 
 function escapedTableCell(text: string): string {
@@ -895,7 +1213,7 @@ function recommendationTableMarkdown(
   }
   if (rows.length < 2) return null;
   return [
-    `**${caption.trim()}**`,
+    mediaTitleMarkdown(caption),
     "",
     "| No. | Recommendation |",
     "| ---: | --- |",
@@ -914,23 +1232,77 @@ function unicodeMathToLatex(text: string): string {
     [/±/g, "\\pm "],
     [/≤/g, "\\le "],
     [/≥/g, "\\ge "],
+    [/≠/g, "\\ne "],
     [/≈/g, "\\approx "],
     [/∞/g, "\\infty "],
     [/×/g, "\\times "],
+    [/÷/g, "\\div "],
+    [/→/g, "\\to "],
+    [/↔/g, "\\leftrightarrow "],
     [/α/g, "\\alpha "],
     [/β/g, "\\beta "],
     [/γ/g, "\\gamma "],
     [/δ/g, "\\delta "],
+    [/ε/g, "\\epsilon "],
+    [/η/g, "\\eta "],
     [/θ/g, "\\theta "],
+    [/κ/g, "\\kappa "],
     [/λ/g, "\\lambda "],
     [/μ/g, "\\mu "],
+    [/ν/g, "\\nu "],
     [/π/g, "\\pi "],
+    [/ρ/g, "\\rho "],
     [/σ/g, "\\sigma "],
+    [/τ/g, "\\tau "],
+    [/φ/g, "\\phi "],
+    [/χ/g, "\\chi "],
+    [/ω/g, "\\omega "],
+    [/²/g, "^{2}"],
+    [/³/g, "^{3}"],
+    [/¹/g, "^{1}"],
+    [/₀/g, "_{0}"],
+    [/₁/g, "_{1}"],
+    [/₂/g, "_{2}"],
+    [/₃/g, "_{3}"],
+    [/₄/g, "_{4}"],
+    [/₅/g, "_{5}"],
+    [/₆/g, "_{6}"],
+    [/₇/g, "_{7}"],
+    [/₈/g, "_{8}"],
+    [/₉/g, "_{9}"],
   ];
   return replacements.reduce(
     (value, [pattern, replacement]) => value.replace(pattern, replacement),
     text,
-  );
+  ).replace(/\s+/g, " ").trim();
+}
+
+function formulaToLatex(line: TextLine): string {
+  const parts = line.parts?.length
+    ? [...line.parts].sort((a, b) => a.x - b.x)
+    : null;
+  if (!parts) return unicodeMathToLatex(line.text);
+  const largestSize = Math.max(...parts.map((part) => part.fontSize));
+  const baseParts = parts.filter((part) => part.fontSize >= largestSize * 0.84);
+  const baseBaseline = median(baseParts.map((part) => part.y + part.fontSize));
+  let markdown = "";
+  let right = parts[0].x;
+  for (const part of parts) {
+    const baseline = part.y + part.fontSize;
+    const isSmall = part.fontSize < largestSize * 0.82;
+    const converted = unicodeMathToLatex(part.text);
+    const gap = part.x - right;
+    if (isSmall && baseline < baseBaseline - largestSize * 0.12) {
+      markdown += `^{${converted}}`;
+    } else if (isSmall && baseline > baseBaseline + largestSize * 0.12) {
+      markdown += `_{${converted}}`;
+    } else {
+      if (markdown && gap > largestSize * 0.18) markdown += " ";
+      markdown += converted;
+    }
+    right = Math.max(right, part.x + part.width);
+  }
+  return markdown.replace(/\s+/g, " ").trim();
 }
 
 function classifyLine(
@@ -941,15 +1313,18 @@ function classifyLine(
 ): BlockKind {
   const text = line.text.trim();
   const mathMatches = text.match(MATH_SYMBOL_PATTERN)?.length ?? 0;
-  if (
-    mathMatches >= 2 &&
-    mathMatches / Math.max(1, text.replace(/\s/g, "").length) > 0.08
-  ) {
-    return "equation";
-  }
   if (CAPTION_PATTERN.test(text)) return "figure";
   if (TABLE_CAPTION_PATTERN.test(text)) return "table";
   if (LIST_PATTERN.test(text)) return "list";
+  const proseWords = text.match(/\b[A-Za-z]{3,}\b/g)?.length ?? 0;
+  if (
+    text.length < 180 &&
+    STRONG_FORMULA_PATTERN.test(text) &&
+    (mathMatches >= 2 || proseWords <= 5) &&
+    !/(?:https?:\/\/|\bdoi\b)/i.test(text)
+  ) {
+    return "equation";
+  }
   if (
     isNearBottom &&
     line.fontSize < profile.bodyFontSize * 0.86 &&
@@ -960,6 +1335,7 @@ function classifyLine(
   if (
     isTitle ||
     (profile.headingFonts.has(fontKey(line)) &&
+      line.fontSize >= profile.bodyFontSize * 0.86 &&
       text.length < 180 &&
       text.split(/\s+/).length < 26 &&
       !TERMINAL_PUNCTUATION.test(text)) ||
@@ -1072,6 +1448,8 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         const insideFigure = figureRegions.some(
           (region) =>
             line !== region.caption &&
+            line.x + line.width / 2 > region.left &&
+            line.x + line.width / 2 < region.right &&
             line.y + line.height / 2 > region.top &&
             line.y + line.height / 2 < region.bottom,
         );
@@ -1083,7 +1461,15 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
             line.y + line.height <= region.captionBottom + bodyFontSize * 0.2 &&
             Math.abs(line.x - region.caption.x) < page.width * 0.12,
         );
-        return !insideFigure && !insideTable && !tableCaptionContinuation;
+        const figureCaptionContinuation = figureRegions.some(
+          (region) =>
+            line !== region.caption &&
+            line.y > region.caption.y &&
+            line.y + line.height <= region.captionBottom + bodyFontSize * 0.2 &&
+            Math.abs(line.x - region.caption.x) < page.width * 0.12,
+        );
+        return !insideFigure && !insideTable && !tableCaptionContinuation &&
+          !figureCaptionContinuation;
       }),
       page.width,
       page.height,
@@ -1159,6 +1545,18 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         lastReferenceNumber = 0;
       }
 
+      if (CAPTION_PATTERN.test(text)) {
+        const caption = captionExtent(page, line, bodyFontSize).text;
+        blocks.push({
+          id: crypto.randomUUID(),
+          kind: "figure",
+          markdown: mediaTitleMarkdown(caption),
+          page: page.page,
+          confidence: page.usedOcr ? 0.62 : 0.86,
+        });
+        continue;
+      }
+
       if (TABLE_CAPTION_PATTERN.test(text)) {
         const region = tableRegions.find((candidate) => candidate.caption === line);
         const caption = captionExtent(page, line, bodyFontSize).text;
@@ -1171,7 +1569,7 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
           kind: "table",
           markdown: structured ?? (region
             ? geometricTableMarkdown(page, region, caption, bodyFontSize)
-            : `**${caption}**`),
+            : mediaTitleMarkdown(caption)),
           page: page.page,
           confidence: page.usedOcr ? 0.62 : 0.86,
         });
@@ -1189,7 +1587,7 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
       if (kind === "heading") {
         markdown = headingMarkdown(markdown, line.fontSize, bodyFontSize, isTitle);
       } else if (kind === "equation") {
-        markdown = `$$\n${unicodeMathToLatex(markdown)}\n$$`;
+        markdown = `$$\n${formulaToLatex(line)}\n$$`;
       } else if (kind === "footnote") {
         markdown = `[^${footnoteNumber}]: ${markdown.replace(/^(?:\d+|[*†‡])\s*/, "")}`;
         footnoteNumber += 1;
@@ -1229,6 +1627,22 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         verticalGap > 0 &&
         line.x - baselineX > bodyFontSize * 0.65 &&
         previousLine.x - baselineX < bodyFontSize * 0.4;
+
+      const canContinueEquation =
+        previous?.kind === "equation" &&
+        kind === "equation" &&
+        previous.page === page.page &&
+        verticalGap >= -bodyFontSize * 0.2 &&
+        verticalGap < bodyFontSize * 2.4;
+      if (canContinueEquation && previous) {
+        const continuation = markdown.replace(/^\$\$\n?|\n?\$\$$/g, "").trim();
+        previous.markdown = previous.markdown.replace(/\n?\$\$$/, ` \\\\\n${continuation}\n$$`);
+        previous.confidence = Math.min(
+          previous.confidence,
+          page.usedOcr ? 0.64 : 0.84,
+        );
+        continue;
+      }
 
       const canContinueCaption =
         previous?.kind === "figure" &&
@@ -1404,13 +1818,15 @@ export function figureCropBounds(
     (candidate) => candidate.caption === caption,
   );
   if (!region) return null;
+  const scaleX = page.canvas.width / page.width;
   const scaleY = page.canvas.height / page.height;
-  const x = Math.floor(page.canvas.width * 0.055);
+  const x = Math.max(0, Math.floor(region.left * scaleX));
   const y = Math.max(0, Math.ceil(region.top * scaleY));
+  const right = Math.min(page.canvas.width, Math.ceil(region.right * scaleX));
   const bottom = Math.min(page.canvas.height, Math.floor(region.bottom * scaleY));
-  const width = page.canvas.width - x * 2;
+  const width = right - x;
   const height = bottom - y;
-  if (width < 120 || height < 80) return null;
+  if (width < 100 || height < 40) return null;
   return { x, y, width, height };
 }
 
@@ -1451,7 +1867,7 @@ async function extractFigures(
         filename,
         blob,
         url: URL.createObjectURL(blob),
-        caption: caption.text,
+        caption: captionExtent(page, caption, profile.bodyFontSize).text,
         page: page.page,
       });
       figureNumber += 1;
@@ -1475,17 +1891,18 @@ function attachFigures(
 ): DocumentBlock[] {
   return blocks.map((block) => {
     if (block.kind !== "figure") return block;
-    const normalizedBlock = normalizeRepeatedLine(block.markdown);
+    const plainTitle = plainMediaTitle(block.markdown);
+    const normalizedBlock = normalizeRepeatedLine(plainTitle);
     const image = images.find(
       (candidate) =>
         candidate.page === block.page &&
         normalizedBlock.startsWith(normalizeRepeatedLine(candidate.caption)),
     );
     if (!image) return block;
-    const alt = block.markdown.replace(CAPTION_PATTERN, "").trim() || "Figure";
+    const alt = plainTitle.replace(CAPTION_PATTERN, "").trim() || "Figure";
     return {
       ...block,
-      markdown: `![${alt}](${image.filename})\n\n*${block.markdown}*`,
+      markdown: `![${alt}](${image.filename})\n\n${block.markdown}`,
       imageFilename: image.filename,
       confidence: Math.min(block.confidence, 0.82),
     };

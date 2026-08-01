@@ -16,7 +16,7 @@ macOS or Windows application.
 - headings, lists, emphasis, links, footnotes, and references retained
 - password-protected PDFs
 - one continuous Markdown editor instead of a block-review workflow
-- direct `.md` download, or a ZIP containing Markdown and extracted figures
+- one ZIP download containing the Markdown file and an `images/` folder whenever figures are present
 
 ## Privacy
 

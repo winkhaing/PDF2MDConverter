@@ -26,7 +26,7 @@ test("server-renders the finished converter", async () => {
   const html = await response.text();
   assert.match(html, /PDF2MD Converter/);
   assert.match(html, /Choose a PDF/);
-  assert.match(html, /Get one Markdown file/);
+  assert.match(html, /Get one complete ZIP/);
   assert.match(html, /Your PDF stays on this device/);
   assert.match(html, /Choose PDF/);
   assert.doesNotMatch(html, /Review extracted blocks|Document structure/);
@@ -55,4 +55,7 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
     converterApp,
     /await import\(["'](?:jszip|@\/src\/lib\/pdf-converter)["']\)/,
   );
+  assert.match(converterApp, /zip\.file\(`\$\{baseName\}\.md`, markdown\)/);
+  assert.match(converterApp, /Download ZIP/);
+  assert.doesNotMatch(converterApp, /Download Markdown/);
 });

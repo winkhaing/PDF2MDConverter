@@ -73,6 +73,69 @@ test("separates text runs that share a baseline but belong to different columns"
   assert.equal(lines[1].text, "Highlights");
 });
 
+test("uses explicit PDF line endings before ordering justified columns", () => {
+  const lines = textItemsToLines(
+    [
+      {
+        str: "Norway (highest",
+        transform: [12, 0, 0, 12, 53, 250],
+        width: 60,
+        fontName: "Body",
+      },
+      {
+        str: " participation >60%),",
+        transform: [12, 0, 0, 12, 151, 250],
+        width: 82,
+        fontName: "Body",
+        hasEOL: true,
+      },
+      {
+        str: "Poland (lowest participation 33%)",
+        transform: [12, 0, 0, 12, 330, 250],
+        width: 120,
+        fontName: "Body",
+      },
+    ],
+    { transform: [1, 0, 0, 1, 0, 0], width: 612, height: 792 },
+    { Util: { transform: (_viewport, item) => item } },
+    1,
+  );
+
+  assert.deepEqual(lines.map((line) => line.text), [
+    "Norway (highest participation >60%),",
+    "Poland (lowest participation 33%)",
+  ]);
+});
+
+test("does not merge rotated watermark runs into horizontal prose", () => {
+  const lines = textItemsToLines(
+    [
+      {
+        str: "The evidence remains indirect.",
+        transform: [12, 0, 0, 12, 53, 250],
+        width: 130,
+        fontName: "Body",
+      },
+      {
+        str: "Protected by copyright",
+        transform: [0, 12, -12, 0, 400, 250],
+        width: 90,
+        fontName: "Watermark",
+      },
+    ],
+    { transform: [1, 0, 0, 1, 0, 0], width: 612, height: 792 },
+    { Util: { transform: (_viewport, item) => item } },
+    1,
+  );
+  const cleaned = removeHeadersAndFooters([
+    rawPage(1, lines),
+  ]);
+
+  assert.deepEqual(cleaned[0].lines.map((line) => line.text), [
+    "The evidence remains indirect.",
+  ]);
+});
+
 function textLine(text, x, y, width, fontSize = 10) {
   return {
     text,
@@ -265,6 +328,7 @@ test("moves a figure after the paragraph it interrupted", () => {
     markdown.indexOf("Based on the responses we refined") <
       markdown.indexOf("Figure 1."),
   );
+  assert.match(markdown, /<u><em>Figure 1\. Components of VBHC interventions\.<\/em><\/u>/);
 });
 
 test("converts recommendation rows into a Markdown table", () => {
@@ -280,6 +344,7 @@ test("converts recommendation rows into a Markdown table", () => {
   assert.match(markdown, /\| No\. \| Recommendation \|/);
   assert.match(markdown, /\| 1 \| Use outcomes that matter to patients\. \|/);
   assert.match(markdown, /\| 2 \| Measure costs across the care cycle\. \|/);
+  assert.match(markdown, /<u><em>Table 1\. Recommendations\.<\/em><\/u>/);
 });
 
 test("preserves bibliography numbering and joins wrapped URLs", () => {
@@ -369,4 +434,52 @@ test("crops a large vector figure above its caption", () => {
   assert.ok(bounds);
   assert.ok(bounds.y < caption.y * 2);
   assert.ok(bounds.y + bounds.height < caption.y * 2);
+});
+
+test("extracts a column-sized vector figure without removing the adjacent article column", () => {
+  const caption = textLine("Fig 1 | Two types of indirectness", 45, 300, 260, 10);
+  const page = rawPage(1, [
+    { ...textLine("Indirectness", 130, 100, 75, 10), fontName: "Diagram" },
+    { ...textLine("Indirect comparisons", 75, 145, 110, 10), fontName: "Diagram" },
+    { ...textLine("Target PICO", 210, 180, 70, 10), fontName: "Diagram" },
+    { ...textLine("Network meta-analysis", 95, 245, 130, 10), fontName: "Diagram" },
+    caption,
+    textLine("The adjacent article column remains readable and complete.", 335, 105, 230),
+    textLine("It continues beside the vector diagram without being cropped.", 335, 120, 230),
+    textLine("A third line establishes the separate body column.", 335, 135, 230),
+    textLine("A fourth line keeps the body font dominant.", 335, 150, 230),
+    textLine("A fifth line completes this synthetic article section.", 335, 165, 230),
+  ], 600, 800);
+  const markdown = blocksToMarkdown(linesToBlocks([page]));
+  const bounds = figureCropBounds(page, page.lines[4]);
+
+  assert.ok(bounds);
+  assert.ok(bounds.width < page.canvas.width * 0.65);
+  assert.doesNotMatch(markdown, /Network meta-analysis/);
+  assert.match(markdown, /adjacent article column remains readable/);
+});
+
+test("converts positioned formula scripts and symbols to display LaTeX", () => {
+  const formula = {
+    ...textLine("E = mc2", 170, 230, 120, 16),
+    fontName: "Math",
+    parts: [
+      { text: "E", x: 170, y: 230, width: 12, fontSize: 16 },
+      { text: "=", x: 194, y: 230, width: 12, fontSize: 16 },
+      { text: "mc", x: 218, y: 230, width: 24, fontSize: 16 },
+      { text: "2", x: 242, y: 224, width: 7, fontSize: 9 },
+    ],
+  };
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("A normal article paragraph begins here", 53, 120, 260),
+      textLine("and continues on another body line", 53, 135, 260),
+      textLine("so the body type can be identified", 53, 150, 260),
+      textLine("before the displayed formula appears", 53, 165, 260),
+      textLine("within the scientific manuscript.", 53, 180, 260),
+      formula,
+    ]),
+  ]));
+
+  assert.match(markdown, /\$\$\nE = mc\^\{2\}\n\$\$/);
 });

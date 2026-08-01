@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Check,
   Clipboard,
-  Download,
   FileArchive,
   FileText,
   LockKeyhole,
@@ -71,7 +70,7 @@ function UploadView({
     <main className="simple-page" id="main-content">
       <section className="upload-panel">
         <span className="eyebrow">PDF to Markdown</span>
-        <h1>Choose a PDF.<br />Get one Markdown file.</h1>
+        <h1>Choose a PDF.<br />Get one complete ZIP.</h1>
         <p className="intro-copy">
           The document is converted on this device. Nothing is uploaded.
         </p>
@@ -261,23 +260,15 @@ function ResultView({
     setNotice(null);
     try {
       const baseName = safeBaseName(document.sourceName);
-      let blob: Blob;
-      let filename: string;
-
-      if (hasImages) {
-        const zip = new JSZip();
-        zip.file(`${baseName}.md`, markdown);
-        for (const image of document.images) zip.file(image.filename, image.blob);
-        blob = await zip.generateAsync({
-          type: "blob",
-          compression: "DEFLATE",
-          compressionOptions: { level: 6 },
-        });
-        filename = `${baseName}.zip`;
-      } else {
-        blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-        filename = `${baseName}.md`;
-      }
+      const zip = new JSZip();
+      zip.file(`${baseName}.md`, markdown);
+      for (const image of document.images) zip.file(image.filename, image.blob);
+      const blob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+      const filename = `${baseName}.zip`;
 
       const url = URL.createObjectURL(blob);
       const anchor = window.document.createElement("a");
@@ -333,8 +324,8 @@ function ResultView({
               onClick={downloadResult}
               disabled={isDownloading}
             >
-              {isDownloading ? <RefreshCw className="spin" size={15} aria-hidden="true" /> : hasImages ? <FileArchive size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}
-              {isDownloading ? "Preparing…" : hasImages ? "Download ZIP" : "Download Markdown"}
+              {isDownloading ? <RefreshCw className="spin" size={15} aria-hidden="true" /> : <FileArchive size={15} aria-hidden="true" />}
+              {isDownloading ? "Preparing…" : "Download ZIP"}
             </button>
           </div>
         </div>
