@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
@@ -64,4 +64,5 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
   assert.match(converterApp, /zip\.file\(`\$\{baseName\}\.md`, markdown\)/);
   assert.match(converterApp, /Download ZIP/);
   assert.doesNotMatch(converterApp, /Download Markdown/);
+  await assert.rejects(stat(new URL("dist/client/.DS_Store", root)));
 });

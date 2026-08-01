@@ -11,11 +11,13 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "prebuild": "npm run prepare:assets",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "postbuild": "node scripts/clean-build-assets.mjs",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "predesktop:dev": "npm run prepare:assets",
     "desktop:dev": "vite --config vite.desktop.config.ts",
     "predesktop:build": "npm run prepare:assets",
     "desktop:build": "vite build --config vite.desktop.config.ts",
+    "postdesktop:build": "node scripts/clean-build-assets.mjs",
     "desktop": "tauri",
     "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern desktop-dist --ignore-pattern src-tauri/target --ignore-pattern .next --ignore-pattern public/ocr --ignore-pattern public/pdf.worker.min.mjs"
