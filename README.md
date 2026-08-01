@@ -4,6 +4,18 @@ PDF2MD Converter turns English academic PDFs into editable Markdown without
 uploading the document. It runs in current desktop browsers and as an offline
 macOS or Windows application.
 
+[Open PDF2MD Converter](https://converter.pdf2md.workers.dev/)
+
+## Screenshots
+
+### Choose a PDF
+
+![PDF2MD Converter PDF selection screen](docs/images/pdf2md-upload.png)
+
+### Review and download
+
+![PDF2MD Converter completed conversion screen](docs/images/pdf2md-converted.png)
+
 ## What it handles
 
 - two-column reading order reconstructed as one continuous Markdown flow
