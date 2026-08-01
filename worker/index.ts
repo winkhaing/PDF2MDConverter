@@ -18,24 +18,42 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-const CONTENT_SECURITY_POLICY = [
-  "default-src 'self'",
-  "base-uri 'none'",
-  "connect-src 'self'",
-  "font-src 'self' data:",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "img-src 'self' blob: data:",
-  "manifest-src 'self'",
-  "object-src 'none'",
-  "script-src 'self' 'wasm-unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "worker-src 'self' blob:",
-].join("; ");
+function createContentSecurityPolicy(nonce?: string): string {
+  return [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "font-src 'self' data:",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "img-src 'self' blob: data:",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    `script-src 'self'${nonce ? ` 'nonce-${nonce}'` : ""} 'wasm-unsafe-eval'`,
+    "style-src 'self' 'unsafe-inline'",
+    "worker-src 'self' blob:",
+  ].join("; ");
+}
 
-function withSecurityHeaders(response: Response, request: Request): Response {
-  const secured = new Response(response.body, response);
-  secured.headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+function createNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes));
+}
+
+async function withSecurityHeaders(response: Response, request: Request): Promise<Response> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const nonce = /^text\/html\b/i.test(contentType) ? createNonce() : undefined;
+  const secured = nonce
+    ? new Response(
+        (await response.text()).replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`),
+        {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        },
+      )
+    : new Response(response.body, response);
+  secured.headers.set("Content-Security-Policy", createContentSecurityPolicy(nonce));
   secured.headers.set("Cross-Origin-Resource-Policy", "same-origin");
   secured.headers.set(
     "Permissions-Policy",
@@ -72,10 +90,10 @@ const worker = {
           return result.response();
         },
       }, allowedWidths);
-      return withSecurityHeaders(response, request);
+      return await withSecurityHeaders(response, request);
     }
 
-    return withSecurityHeaders(await handler.fetch(request, env, ctx), request);
+    return await withSecurityHeaders(await handler.fetch(request, env, ctx), request);
   },
 };
 

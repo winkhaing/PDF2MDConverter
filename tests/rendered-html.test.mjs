@@ -23,11 +23,24 @@ test("server-renders the finished converter", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-  assert.match(response.headers.get("content-security-policy") ?? "", /object-src 'none'/);
+  const contentSecurityPolicy = response.headers.get("content-security-policy") ?? "";
+  assert.match(contentSecurityPolicy, /object-src 'none'/);
+  const scriptPolicy = contentSecurityPolicy
+    .split(";")
+    .find((directive) => directive.trim().startsWith("script-src")) ?? "";
+  assert.doesNotMatch(scriptPolicy, /'unsafe-inline'/);
+  const nonce = contentSecurityPolicy.match(/'nonce-([^']+)'/)?.[1];
+  assert.ok(nonce, "HTML responses should authorize their startup scripts with a nonce");
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("x-frame-options"), "DENY");
   const html = await response.text();
+  const scripts = [...html.matchAll(/<script\b([^>]*)>/g)];
+  assert.ok(scripts.length > 0);
+  assert.ok(
+    scripts.every(([, attributes]) => attributes.includes(`nonce="${nonce}"`)),
+    "Every startup script should carry the nonce authorized by the CSP",
+  );
   assert.match(html, /PDF2MD Converter/);
   assert.match(html, /Choose a PDF/);
   assert.match(html, /Get one complete ZIP/);
