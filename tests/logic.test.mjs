@@ -205,6 +205,38 @@ test("removes journal headers, footers, and bare page numbers", () => {
   );
 });
 
+test("removes alternating page headers and rotated watermark text", () => {
+  const pages = removeHeadersAndFooters([
+    rawPage(1, [
+      textLine("CORE GRADE: OVERVIEW", 50, 20, 180),
+      textLine("First article paragraph.", 50, 130, 220),
+      { ...textLine("BMJ", 590, 300, 30), angle: 90 },
+    ]),
+    rawPage(2, [
+      textLine("RESEARCH METHODS", 50, 20, 170),
+      textLine("Second article paragraph.", 50, 130, 220),
+    ]),
+    rawPage(3, [
+      textLine("CORE GRADE: OVERVIEW", 50, 20, 180),
+      textLine("Third article paragraph.", 50, 130, 220),
+    ]),
+    rawPage(4, [
+      textLine("RESEARCH METHODS", 50, 20, 170),
+      textLine("Fourth article paragraph.", 50, 130, 220),
+    ]),
+  ]);
+
+  assert.deepEqual(
+    pages.flatMap((page) => page.lines.map((line) => line.text)),
+    [
+      "First article paragraph.",
+      "Second article paragraph.",
+      "Third article paragraph.",
+      "Fourth article paragraph.",
+    ],
+  );
+});
+
 test("keeps original first-line indentation as a paragraph break", () => {
   const markdown = blocksToMarkdown(linesToBlocks([
     rawPage(1, [
@@ -265,6 +297,51 @@ test("preserves bibliography numbering and joins wrapped URLs", () => {
   assert.doesNotMatch(markdown, /- First article/);
 });
 
+test("detects an unlabeled bibliography and keeps embedded numbers in their entry", () => {
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("Earlier article text begins here", 53, 120, 250),
+      textLine("and continues as normal prose", 53, 135, 250),
+      textLine("with enough body lines to establish", 53, 150, 250),
+      textLine("the article's dominant text size", 53, 165, 250),
+      textLine("before its bibliography begins.", 53, 180, 250),
+    ]),
+    rawPage(2, [
+      { ...textLine("1  First article by Smith et al. 2024.", 53, 600, 250, 8), page: 2 },
+      { ...textLine("2  Second article included 120 randomised trials.", 53, 620, 280, 8), page: 2 },
+      { ...textLine("3  Third article. doi:10.1000/example.", 53, 640, 250, 8), page: 2 },
+    ]),
+  ]));
+
+  assert.match(markdown, /## REFERENCES/);
+  assert.match(markdown, /2\. Second article included 120 randomised trials\./);
+  assert.doesNotMatch(markdown, /^120\. /m);
+});
+
+test("uses positioned text fragments to preserve table columns", () => {
+  const tableLine = (text, y, parts) => ({
+    ...textLine(text, parts[0].x, y, 250, 10),
+    parts,
+  });
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("Table 1 | Trial outcomes", 53, 100, 220, 10),
+      tableLine("OutcomeStudy result", 125, [
+        { text: "Outcome", x: 53, width: 42 },
+        { text: "Study result", x: 220, width: 65 },
+      ]),
+      tableLine("MortalityLower risk", 140, [
+        { text: "Mortality", x: 53, width: 48 },
+        { text: "Lower risk", x: 220, width: 55 },
+      ]),
+      textLine("Conclusion", 53, 190, 75, 13),
+    ]),
+  ]));
+
+  assert.match(markdown, /\| Outcome \| Study result \|/);
+  assert.match(markdown, /\| Mortality \| Lower risk \|/);
+});
+
 test("crops a figure below its caption and stops before following text", () => {
   const caption = textLine("Figure 1. Components of VBHC.", 53, 100, 260);
   const page = rawPage(1, [
@@ -277,4 +354,19 @@ test("crops a figure below its caption and stops before following text", () => {
   assert.ok(bounds);
   assert.ok(bounds.y > 220);
   assert.ok(bounds.y + bounds.height < 640);
+});
+
+test("crops a large vector figure above its caption", () => {
+  const caption = textLine("Fig 2 | Core GRADE workflow", 53, 560, 260);
+  const page = rawPage(1, [
+    textLine("Body paragraph before the figure area.", 53, 80, 250),
+    textLine("Vector diagram label", 120, 250, 180, 18),
+    caption,
+    textLine("Following article paragraph after the caption.", 53, 600, 280),
+  ], 600, 800);
+  const bounds = figureCropBounds(page, page.lines[2]);
+
+  assert.ok(bounds);
+  assert.ok(bounds.y < caption.y * 2);
+  assert.ok(bounds.y + bounds.height < caption.y * 2);
 });
