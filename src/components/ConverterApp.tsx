@@ -352,7 +352,12 @@ function ResultView({
           onChange={(event) => setMarkdown(event.target.value)}
           spellCheck
         />
-        <button className="convert-another" type="button" onClick={onReset}>
+        <button
+          className="secondary-button convert-another"
+          type="button"
+          onClick={onReset}
+        >
+          <RefreshCw size={15} aria-hidden="true" />
           Convert another PDF
         </button>
       </section>

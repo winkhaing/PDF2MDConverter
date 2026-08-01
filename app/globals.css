@@ -240,8 +240,7 @@ textarea:focus-visible {
 
 .primary-button,
 .secondary-button,
-.text-button,
-.convert-another {
+.text-button {
   border: 0;
   cursor: pointer;
   display: inline-flex;
@@ -289,8 +288,7 @@ textarea:focus-visible {
   border-color: #aeb8c8;
 }
 
-.text-button,
-.convert-another {
+.text-button {
   min-height: 38px;
   padding: 0 10px;
   color: var(--muted);
@@ -298,8 +296,7 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
-.text-button:hover,
-.convert-another:hover {
+.text-button:hover {
   color: var(--ink);
   text-decoration: underline;
 }

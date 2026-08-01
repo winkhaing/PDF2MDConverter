@@ -78,5 +78,6 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
   assert.match(converterApp, /zip\.file\(`\$\{baseName\}\.md`, markdown\)/);
   assert.match(converterApp, /Download ZIP/);
   assert.doesNotMatch(converterApp, /Download Markdown/);
+  assert.match(converterApp, /className="secondary-button convert-another"/);
   await assert.rejects(stat(new URL("dist/client/.DS_Store", root)));
 });
