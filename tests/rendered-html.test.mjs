@@ -66,7 +66,7 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
     readFile(new URL("README.md", root), "utf8"),
     readFile(new URL("src/components/ConverterApp.tsx", root), "utf8"),
   ]);
-  assert.match(packageJson, /"name": "pdf2md-converter"/);
+  assert.match(packageJson, /"name": "convert-pdf2md"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton|react-markdown|katex/);
   assert.match(layout, /og\.png/);
   assert.match(readme, /processed in the browser or desktop webview/);
