@@ -24,6 +24,20 @@ PDF content is processed in the browser or desktop webview. The app has no
 upload API, analytics, account system, or document storage. OCR language data
 and processing code are bundled with the app.
 
+The converter accepts PDFs up to 100 MB and 300 pages. It restricts rendered
+page dimensions and total canvas memory, restricts script execution with a
+Content Security Policy, and does not activate links embedded in PDFs. Only
+`http`, `https`, and credential-free `mailto` annotations are retained as inert
+Markdown links.
+
+## Responsible use
+
+Only process documents you are authorized to access and reproduce. The MIT
+license covers this application's source code, not text, tables, or figures
+extracted from third-party documents. Always compare converted Markdown with
+the source PDF before citing it, publishing it, analyzing it, or using it for
+clinical, regulatory, or other high-stakes decisions.
+
 ## Development
 
 Requirements:

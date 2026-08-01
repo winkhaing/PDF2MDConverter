@@ -15,7 +15,7 @@ import {
 import JSZip from "jszip";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { blocksToMarkdown, safeBaseName } from "@/src/lib/markdown";
-import { convertPdf } from "@/src/lib/pdf-converter";
+import { convertPdf, validatePdfFile } from "@/src/lib/pdf-converter";
 import {
   PasswordRequiredError,
   type ConvertedDocument,
@@ -211,7 +211,9 @@ function PasswordDialog({
             name="pdf-password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            autoComplete="current-password"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
           />
         </label>
         <div className="dialog-actions">
@@ -388,11 +390,9 @@ export function ConverterApp() {
   }, [document, reset]);
 
   const beginConversion = useCallback(async (selectedFile: File, password = "") => {
-    if (
-      selectedFile.type !== "application/pdf" &&
-      !selectedFile.name.toLowerCase().endsWith(".pdf")
-    ) {
-      setError("Please choose a PDF file.");
+    const validationError = validatePdfFile(selectedFile);
+    if (validationError) {
+      setError(validationError);
       return;
     }
 

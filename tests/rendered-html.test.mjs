@@ -23,6 +23,10 @@ test("server-renders the finished converter", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(response.headers.get("content-security-policy") ?? "", /object-src 'none'/);
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
   const html = await response.text();
   assert.match(html, /PDF2MD Converter/);
   assert.match(html, /Choose a PDF/);
@@ -39,7 +43,9 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
     access(new URL("public/ocr/worker.min.js", root)),
     access(new URL("public/og.png", root)),
     access(new URL("src-tauri/tauri.conf.json", root)),
+    access(new URL("src-tauri/capabilities/main.json", root)),
     access(new URL("LICENSE", root)),
+    access(new URL("SECURITY.md", root)),
   ]);
   const [packageJson, layout, readme, converterApp] = await Promise.all([
     readFile(new URL("package.json", root), "utf8"),

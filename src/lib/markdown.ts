@@ -50,6 +50,8 @@ export function safeBaseName(filename: string): string {
     .replace(/[^\w\s.-]/g, "")
     .trim()
     .replace(/\s+/g, "-")
-    .replace(/-+/g, "-");
+    .replace(/-+/g, "-")
+    .slice(0, 120)
+    .replace(/[. -]+$/g, "");
   return safe || "converted-document";
 }

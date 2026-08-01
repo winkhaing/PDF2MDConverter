@@ -42,6 +42,11 @@ interface RawPage {
 
 type ProgressHandler = (progress: ConversionProgress) => void;
 
+export const MAX_PDF_FILE_BYTES = 100 * 1024 * 1024;
+export const MAX_PDF_PAGES = 300;
+const MAX_RENDER_EDGE = 8192;
+const MAX_RENDER_PIXELS = 16_000_000;
+const MAX_TOTAL_RENDER_PIXELS = 64_000_000;
 const HEADER_FOOTER_ZONE = 0.11;
 const CAPTION_PATTERN = /^(?:figure|fig\.?)\s*\d+\s*[.:)|]\s*/i;
 const TABLE_CAPTION_PATTERN = /^table\s*\d+\s*[.:)|]\s*/i;
@@ -78,24 +83,66 @@ function dedupeRepeatedPhrase(text: string): string {
     : clean;
 }
 
-function escapeInlineHtml(text: string): string {
+function escapeMarkdownText(text: string): string {
   return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/\\/g, "\\\\")
+    .replace(/<(?=[A-Za-z!/])/g, "&lt;")
+    .replace(/([\[\]`*_])/g, "\\$1");
 }
 
 function mediaTitleMarkdown(text: string): string {
-  return `<u><em>${escapeInlineHtml(text.trim())}</em></u>`;
+  return `<u><em>${escapeMarkdownText(text.trim())}</em></u>`;
 }
 
 function plainMediaTitle(markdown: string): string {
   return markdown
     .replace(/<\/?(?:u|em)>/gi, "")
+    .replace(/\\([\[\]`*_\\])/g, "$1")
     .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
     .trim();
+}
+
+function safeAnnotationUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:", "mailto:"].includes(url.protocol)) return null;
+    if (url.username || url.password) return null;
+    return url.href.replace(/</g, "%3C").replace(/>/g, "%3E");
+  } catch {
+    return null;
+  }
+}
+
+export function validatePdfFile(
+  file: Pick<File, "name" | "size" | "type">,
+): string | null {
+  if (
+    file.type !== "application/pdf" &&
+    !file.name.toLowerCase().endsWith(".pdf")
+  ) {
+    return "Please choose a PDF file.";
+  }
+  if (file.size <= 0) return "This PDF is empty.";
+  if (file.size > MAX_PDF_FILE_BYTES) {
+    return "This PDF is larger than the 100 MB safety limit.";
+  }
+  return null;
+}
+
+export function hasPdfSignature(bytes: Uint8Array): boolean {
+  const limit = Math.min(bytes.length - 4, 1024);
+  for (let index = 0; index < limit; index += 1) {
+    if (
+      bytes[index] === 0x25 &&
+      bytes[index + 1] === 0x50 &&
+      bytes[index + 2] === 0x44 &&
+      bytes[index + 3] === 0x46 &&
+      bytes[index + 4] === 0x2d
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function fontKey(line: TextLine): string {
@@ -1191,7 +1238,11 @@ function scriptedTableFragment(
 }
 
 function escapedTableCell(text: string): string {
-  return text.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+  return escapeMarkdownText(text)
+    .replace(/&lt;(\/?)(sup|sub)>/gi, "<$1$2>")
+    .replace(/\|/g, "\\|")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function recommendationTableMarkdown(
@@ -1523,7 +1574,9 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
           blocks.push({
             id: crypto.randomUUID(),
             kind: "list",
-            markdown: `${entry[1]}. ${text.replace(REFERENCE_CONTINUATION_ENTRY_PATTERN, "").trim()}`,
+            markdown: `${entry[1]}. ${escapeMarkdownText(
+              text.replace(REFERENCE_CONTINUATION_ENTRY_PATTERN, "").trim(),
+            )}`,
             page: page.page,
             confidence: page.usedOcr ? 0.67 : 0.92,
           });
@@ -1533,7 +1586,10 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         if (!stopsReferences) {
           const previous = blocks.at(-1);
           if (previous?.kind === "list") {
-            previous.markdown = joinWrappedText(previous.markdown, text);
+            previous.markdown = joinWrappedText(
+              previous.markdown,
+              escapeMarkdownText(text),
+            );
             previous.confidence = Math.min(
               previous.confidence,
               page.usedOcr ? 0.67 : 0.92,
@@ -1583,19 +1639,23 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         line.y > page.height * 0.8,
         isTitle,
       );
-      let markdown = text;
+      let markdown = escapeMarkdownText(text);
       if (kind === "heading") {
         markdown = headingMarkdown(markdown, line.fontSize, bodyFontSize, isTitle);
       } else if (kind === "equation") {
         markdown = `$$\n${formulaToLatex(line)}\n$$`;
       } else if (kind === "footnote") {
-        markdown = `[^${footnoteNumber}]: ${markdown.replace(/^(?:\d+|[*†‡])\s*/, "")}`;
+        markdown = `[^${footnoteNumber}]: ${escapeMarkdownText(
+          text.replace(/^(?:\d+|[*†‡])\s*/, ""),
+        )}`;
         footnoteNumber += 1;
       } else if (kind === "list") {
-        const ordered = markdown.match(ORDERED_LIST_PATTERN);
+        const ordered = text.match(ORDERED_LIST_PATTERN);
         markdown = ordered
-          ? `${ordered[1] ?? ordered[2]}. ${markdown.replace(ORDERED_LIST_PATTERN, "")}`
-          : markdown.replace(LIST_PATTERN, "- ");
+          ? `${ordered[1] ?? ordered[2]}. ${escapeMarkdownText(
+              text.replace(ORDERED_LIST_PATTERN, ""),
+            )}`
+          : `- ${escapeMarkdownText(text.replace(LIST_PATTERN, ""))}`;
       } else if (kind === "paragraph") {
         const isBold = /bold|black|heavy/i.test(line.fontName);
         const isItalic = /italic|oblique/i.test(line.fontName);
@@ -1716,11 +1776,13 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
 
     for (const annotation of page.annotations) {
       if (!annotation.text.trim()) continue;
-      if (!blocks.some((block) => block.markdown.includes(annotation.url))) {
+      const safeUrl = safeAnnotationUrl(annotation.url);
+      if (!safeUrl) continue;
+      if (!blocks.some((block) => block.markdown.includes(safeUrl))) {
         annotationBlocks.push({
           id: crypto.randomUUID(),
           kind: "paragraph",
-          markdown: `[${annotation.text || annotation.url}](${annotation.url})`,
+          markdown: `[${escapeMarkdownText(annotation.text || safeUrl)}](<${safeUrl}>)`,
           page: page.page,
           confidence: 0.95,
         });
@@ -1733,11 +1795,35 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
   ];
 }
 
-async function renderPage(page: PDFPageProxy, scale = 1.6) {
+async function renderPage(
+  page: PDFPageProxy,
+  preferredScale = 1.6,
+  pixelLimit = MAX_RENDER_PIXELS,
+) {
+  const baseViewport = page.getViewport({ scale: 1 });
+  if (
+    !Number.isFinite(baseViewport.width) ||
+    !Number.isFinite(baseViewport.height) ||
+    baseViewport.width <= 0 ||
+    baseViewport.height <= 0
+  ) {
+    throw new Error("This PDF contains invalid page dimensions.");
+  }
+  const pixelScale = Math.sqrt(
+    pixelLimit / (baseViewport.width * baseViewport.height),
+  );
+  const edgeScale = Math.min(
+    MAX_RENDER_EDGE / baseViewport.width,
+    MAX_RENDER_EDGE / baseViewport.height,
+  );
+  const scale = Math.max(
+    Number.EPSILON,
+    Math.min(preferredScale, pixelScale, edgeScale),
+  );
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
+  canvas.width = Math.max(1, Math.ceil(viewport.width));
+  canvas.height = Math.max(1, Math.ceil(viewport.height));
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("Canvas rendering is unavailable in this browser.");
   await page.render({ canvas, canvasContext: context, viewport }).promise;
@@ -1902,7 +1988,7 @@ function attachFigures(
     const alt = plainTitle.replace(CAPTION_PATTERN, "").trim() || "Figure";
     return {
       ...block,
-      markdown: `![${alt}](${image.filename})\n\n${block.markdown}`,
+      markdown: `![${escapeMarkdownText(alt)}](${image.filename})\n\n${block.markdown}`,
       imageFilename: image.filename,
       confidence: Math.min(block.confidence, 0.82),
     };
@@ -1916,6 +2002,8 @@ export async function convertPdf(
   signal?: AbortSignal,
 ): Promise<ConvertedDocument> {
   throwIfAborted(signal);
+  const validationError = validatePdfFile(file);
+  if (validationError) throw new Error(validationError);
   onProgress({
     phase: "opening",
     page: 0,
@@ -1930,7 +2018,10 @@ export async function convertPdf(
     window.location.href,
   ).href;
 
-  const bytes = await file.arrayBuffer();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!hasPdfSignature(bytes)) {
+    throw new Error("This file does not contain a valid PDF signature.");
+  }
   const loadingTask = pdfjs.getDocument({
     data: bytes,
     password: password || undefined,
@@ -1954,8 +2045,19 @@ export async function convertPdf(
     throw error;
   }
 
+  if (pdf.numPages > MAX_PDF_PAGES) {
+    await loadingTask.destroy();
+    throw new Error(
+      `This PDF has more than the ${MAX_PDF_PAGES}-page safety limit.`,
+    );
+  }
+
   const rawPages: RawPage[] = [];
   let ocrPages = 0;
+  const pagePixelLimit = Math.min(
+    MAX_RENDER_PIXELS,
+    MAX_TOTAL_RENDER_PIXELS / Math.max(1, pdf.numPages),
+  );
 
   try {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -1969,7 +2071,7 @@ export async function convertPdf(
     });
     const page = await pdf.getPage(pageNumber);
     const [{ canvas, viewport }, textContent, annotations] = await Promise.all([
-      renderPage(page),
+      renderPage(page, 1.6, pagePixelLimit),
       page.getTextContent(),
       page.getAnnotations({ intent: "display" }),
     ]);
@@ -2049,7 +2151,8 @@ export async function convertPdf(
   blocks = attachFigures(blocks, images);
   const titleBlock = blocks.find((block) => block.kind === "heading");
   const title =
-    titleBlock?.markdown.replace(/^#+\s*/, "").trim() || safeBaseName(file.name);
+    plainMediaTitle(titleBlock?.markdown.replace(/^#+\s*/, "").trim() ?? "") ||
+    safeBaseName(file.name);
   const wordCount = blocks.reduce(
     (total, block) =>
       total + block.markdown.split(/\s+/).filter(Boolean).length,

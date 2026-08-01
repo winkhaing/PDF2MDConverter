@@ -7,10 +7,13 @@ import {
 } from "../src/lib/markdown.ts";
 import {
   figureCropBounds,
+  hasPdfSignature,
   linesToBlocks,
+  MAX_PDF_FILE_BYTES,
   orderLines,
   removeHeadersAndFooters,
   textItemsToLines,
+  validatePdfFile,
 } from "../src/lib/pdf-converter.ts";
 
 function paragraph(markdown, page) {
@@ -34,6 +37,28 @@ test("assembles clean Markdown and safe export names", () => {
   );
   assert.equal(safeBaseName("A Résumé / Trial?.PDF"), "A-Resume-Trial");
   assert.equal(safeBaseName("💾.pdf"), "converted-document");
+  assert.equal(safeBaseName(`${"a".repeat(200)}.pdf`).length, 120);
+});
+
+test("rejects unsafe file sizes and spoofed PDF signatures", () => {
+  assert.equal(
+    validatePdfFile({ name: "paper.pdf", type: "application/pdf", size: 42 }),
+    null,
+  );
+  assert.match(
+    validatePdfFile({
+      name: "paper.pdf",
+      type: "application/pdf",
+      size: MAX_PDF_FILE_BYTES + 1,
+    }) ?? "",
+    /100 MB safety limit/,
+  );
+  assert.match(
+    validatePdfFile({ name: "paper.txt", type: "text/plain", size: 42 }) ?? "",
+    /choose a PDF/i,
+  );
+  assert.equal(hasPdfSignature(new TextEncoder().encode("%PDF-1.7")), true);
+  assert.equal(hasPdfSignature(new TextEncoder().encode("not a PDF")), false);
 });
 
 test("joins flowing paragraphs across pages without losing confidence", () => {
@@ -246,6 +271,37 @@ test("keeps annotations from interrupting a paragraph that continues on the next
     /health-related quality of life to equip decision makers\./,
   );
   assert.ok(markdown.indexOf("quality of life") < markdown.indexOf("https://example.com/article"));
+});
+
+test("keeps extracted Markdown inert and drops unsafe annotation URLs", () => {
+  const markdown = blocksToMarkdown(linesToBlocks([
+    {
+      page: 1,
+      width: 612,
+      height: 792,
+      lines: [
+        textLine(
+          "Summary <script>alert(1)</script> [click](javascript:alert(2))",
+          53,
+          130,
+          300,
+        ),
+      ],
+      canvas: {},
+      annotations: [
+        { text: "Safe [journal]", url: "https://example.com/paper" },
+        { text: "Unsafe", url: "javascript:alert(3)" },
+        { text: "Credential URL", url: "https://user:pass@example.com/" },
+      ],
+      usedOcr: false,
+    },
+  ]));
+
+  assert.doesNotMatch(markdown, /<script>|(?<!\\)\]\(javascript:/i);
+  assert.match(markdown, /&lt;script>alert\(1\)&lt;\/script>/);
+  assert.match(markdown, /\\\[click\\\]\(javascript:alert\(2\)\)/);
+  assert.match(markdown, /\[Safe \\\[journal\\\]\]\(<https:\/\/example\.com\/paper>\)/);
+  assert.doesNotMatch(markdown, /javascript:alert\(3\)|user:pass/);
 });
 
 test("removes journal headers, footers, and bare page numbers", () => {
