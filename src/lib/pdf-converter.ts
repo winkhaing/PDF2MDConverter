@@ -683,7 +683,12 @@ export function buildDocumentProfile(pages: RawPage[]): DocumentProfile {
     const averageLength = stat.chars / stat.lines.length;
     const terminalRatio = stat.terminal / stat.lines.length;
     let longestRun = 1;
-    const byPage = Map.groupBy(stat.lines, (line) => line.page);
+    const byPage = new Map<number, TextLine[]>();
+    for (const line of stat.lines) {
+      const pageLines = byPage.get(line.page);
+      if (pageLines) pageLines.push(line);
+      else byPage.set(line.page, [line]);
+    }
     for (const pageLines of byPage.values()) {
       const sorted = [...pageLines].sort((a, b) => a.y - b.y || a.x - b.x);
       let run = 1;

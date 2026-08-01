@@ -74,6 +74,7 @@ test("ships local OCR, desktop, social, and public-project assets", async () => 
     converterApp,
     /await import\(["'](?:jszip|@\/src\/lib\/pdf-converter)["']\)/,
   );
+  assert.doesNotMatch(converterApp, /Map\.groupBy/);
   assert.match(converterApp, /zip\.file\(`\$\{baseName\}\.md`, markdown\)/);
   assert.match(converterApp, /Download ZIP/);
   assert.doesNotMatch(converterApp, /Download Markdown/);
