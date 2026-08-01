@@ -405,13 +405,14 @@ textarea:focus-visible {
 .result-header {
   padding: 22px 24px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 22px;
   border-bottom: 1px solid var(--line);
 }
 
 .result-heading {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: flex-start;
@@ -434,13 +435,12 @@ textarea:focus-visible {
 }
 
 .result-heading h1 {
-  max-width: 680px;
+  max-width: none;
   margin: 5px 0 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-size: 23px;
   letter-spacing: -0.035em;
+  line-height: 1.18;
 }
 
 .result-heading p {
@@ -683,7 +683,6 @@ textarea:focus-visible {
   }
 
   .result-heading h1 {
-    max-width: calc(100vw - 100px);
     font-size: 21px;
   }
 

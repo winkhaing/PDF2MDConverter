@@ -6,8 +6,10 @@ import {
   safeBaseName,
 } from "../src/lib/markdown.ts";
 import {
+  figureCropBounds,
   linesToBlocks,
   orderLines,
+  removeHeadersAndFooters,
   textItemsToLines,
 } from "../src/lib/pdf-converter.ts";
 
@@ -81,6 +83,18 @@ function textLine(text, x, y, width, fontSize = 10) {
     fontSize,
     fontName: "Body",
     page: 1,
+  };
+}
+
+function rawPage(page, lines, width = 612, height = 792) {
+  return {
+    page,
+    width,
+    height,
+    lines: lines.map((line) => ({ ...line, page })),
+    canvas: { width: width * 2, height: height * 2 },
+    annotations: [],
+    usedOcr: false,
   };
 }
 
@@ -169,4 +183,98 @@ test("keeps annotations from interrupting a paragraph that continues on the next
     /health-related quality of life to equip decision makers\./,
   );
   assert.ok(markdown.indexOf("quality of life") < markdown.indexOf("https://example.com/article"));
+});
+
+test("removes journal headers, footers, and bare page numbers", () => {
+  const pages = removeHeadersAndFooters([
+    rawPage(1, [
+      textLine("ISPOR REPORT 1143", 50, 20, 130),
+      textLine("Useful article text.", 50, 130, 220),
+      textLine("1143", 520, 770, 30),
+    ]),
+    rawPage(2, [
+      textLine("1144 VALUE IN HEALTH JULY 2026", 50, 20, 220),
+      textLine("More useful article text.", 50, 130, 220),
+      textLine("1144", 50, 770, 30),
+    ]),
+  ]);
+
+  assert.deepEqual(
+    pages.flatMap((page) => page.lines.map((line) => line.text)),
+    ["Useful article text.", "More useful article text."],
+  );
+});
+
+test("keeps original first-line indentation as a paragraph break", () => {
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("The first paragraph has a complete thought.", 53, 120, 240),
+      textLine("A new indented paragraph begins here", 65, 142, 230),
+      textLine("and continues from the normal margin.", 53, 154, 240),
+    ]),
+  ]));
+
+  assert.match(
+    markdown,
+    /complete thought\.\n\nA new indented paragraph begins here and continues/,
+  );
+});
+
+test("moves a figure after the paragraph it interrupted", () => {
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("Based on the responses we", 53, 120, 220),
+      textLine("Figure 1. Components of VBHC interventions.", 53, 180, 330),
+      textLine("refined the recommendations for implementation.", 53, 240, 280),
+    ]),
+  ]));
+
+  assert.ok(
+    markdown.indexOf("Based on the responses we refined") <
+      markdown.indexOf("Figure 1."),
+  );
+});
+
+test("converts recommendation rows into a Markdown table", () => {
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("Table 1. Recommendations.", 53, 120, 220),
+      textLine("(1) Use outcomes that matter to patients.", 53, 145, 300),
+      textLine("(2) Measure costs across the care cycle.", 53, 160, 300),
+      textLine("Conclusions", 53, 200, 80, 12),
+    ]),
+  ]));
+
+  assert.match(markdown, /\| No\. \| Recommendation \|/);
+  assert.match(markdown, /\| 1 \| Use outcomes that matter to patients\. \|/);
+  assert.match(markdown, /\| 2 \| Measure costs across the care cycle\. \|/);
+});
+
+test("preserves bibliography numbering and joins wrapped URLs", () => {
+  const markdown = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("References", 53, 100, 90, 13),
+      textLine("1. First article. https://", 53, 125, 230),
+      textLine("example.org/article", 53, 138, 180),
+      textLine("2. Second article.", 53, 160, 180),
+    ]),
+  ]));
+
+  assert.match(markdown, /1\. First article\. https:\/\/example\.org\/article/);
+  assert.match(markdown, /2\. Second article\./);
+  assert.doesNotMatch(markdown, /- First article/);
+});
+
+test("crops a figure below its caption and stops before following text", () => {
+  const caption = textLine("Figure 1. Components of VBHC.", 53, 100, 260);
+  const page = rawPage(1, [
+    caption,
+    textLine("Caption continuation", 53, 112, 220),
+    textLine("Following body paragraph.", 53, 320, 250),
+  ], 600, 800);
+  const bounds = figureCropBounds(page, page.lines[0]);
+
+  assert.ok(bounds);
+  assert.ok(bounds.y > 220);
+  assert.ok(bounds.y + bounds.height < 640);
 });

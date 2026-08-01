@@ -33,14 +33,21 @@ interface RawPage {
 type ProgressHandler = (progress: ConversionProgress) => void;
 
 const HEADER_FOOTER_ZONE = 0.11;
-const CAPTION_PATTERN = /^(?:figure|fig\.)\s*\d+[.:)]?\s*/i;
-const TABLE_CAPTION_PATTERN = /^table\s*\d+[.:)]?\s*/i;
-const LIST_PATTERN = /^(?:[-•▪◦]|\d+[.)]|[a-z][.)])\s+/i;
+const CAPTION_PATTERN = /^(?:figure|fig\.)\s*\d+\s*[.:)]\s*/i;
+const TABLE_CAPTION_PATTERN = /^table\s*\d+\s*[.:)]\s*/i;
+const LIST_PATTERN = /^(?:[-•▪◦]|\(\d+\)|\d+[.)]|[a-z][.)])\s+/i;
+const ORDERED_LIST_PATTERN = /^(?:\((\d+)\)|(\d+)[.)])\s+/;
+const REFERENCE_ENTRY_PATTERN = /^(\d{1,3})[.)]\s+/;
+const TABLE_RECOMMENDATION_PATTERN = /^\((\d+)\)\s+/;
 const PAGE_NUMBER_PATTERN = /^(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?$/i;
 const REFERENCE_PATTERN = /^(?:references|bibliography)$/i;
 const MATH_SYMBOL_PATTERN = /[=∑∫√±≤≥≈∞α-ωΑ-Ω^_]/g;
 const LEGAL_FOOTER_PATTERN = /(?:see front matter|copyright|published by elsevier)/i;
 const DECORATIVE_GLYPH_PATTERN = /^[■□▪◆●]+$/;
+const JOURNAL_HEADER_PATTERN = /^(?:(?:\d+\s+)?value in health(?:\s+july\s+\d{4})?|ispor report(?:\s+\d+)?|july\s+\d{4})$/i;
+const FRONT_MATTER_NOISE_PATTERN = /(?:contents lists available at sciencedirect\.com|journal homepage:)/i;
+const TERMINAL_PUNCTUATION = /[.!?]["')\]]?$/;
+const WRAPPED_HEADING_END_PATTERN = /(?:-|\b(?:and|for|from|in|of|the|to|with))$/i;
 
 function normalizeRepeatedLine(text: string): string {
   return text
@@ -48,6 +55,20 @@ function normalizeRepeatedLine(text: string): string {
     .replace(/\d+/g, "#")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function joinWrappedText(left: string, right: string): string {
+  const cleanLeft = left.trimEnd();
+  const cleanRight = right.trimStart();
+  const endsInsideUrl = /(?:https?:\/\/|www\.)\S*$/i.test(cleanLeft);
+  const beginsWithProse = /^(?:accessed|available|published|retrieved)\b/i.test(
+    cleanRight,
+  );
+  return cleanLeft.endsWith("-")
+    ? `${cleanLeft.slice(0, -1)}${cleanRight}`
+    : endsInsideUrl && !beginsWithProse
+      ? `${cleanLeft}${cleanRight}`
+    : `${cleanLeft} ${cleanRight}`;
 }
 
 function annotationText(value: unknown): string {
@@ -207,7 +228,7 @@ interface LayoutTransition {
   splitX: number;
 }
 
-function layoutTransitions(
+export function layoutTransitions(
   lines: TextLine[],
   pageWidth: number,
   pageHeight: number,
@@ -241,6 +262,8 @@ function layoutTransitions(
       if (
         above !== null &&
         below !== null &&
+        above > pageWidth * 0.64 &&
+        below < pageWidth * 0.62 &&
         above - below > pageWidth * 0.09
       ) {
         return {
@@ -310,9 +333,11 @@ function orderLineSegment(
   const fullWidth = lines
     .filter(
       (line) =>
-        line.width >= pageWidth * 0.62 &&
-        line.x < pageWidth * 0.22 &&
-        line.x + line.width > pageWidth * 0.72,
+        (line.width >= pageWidth * 0.62 &&
+          line.x < pageWidth * 0.22 &&
+          line.x + line.width > pageWidth * 0.72) ||
+        CAPTION_PATTERN.test(line.text) ||
+        TABLE_CAPTION_PATTERN.test(line.text),
     )
     .sort((a, b) => a.y - b.y);
   const fullWidthSet = new Set(fullWidth);
@@ -337,16 +362,22 @@ function orderLineSegment(
   return ordered;
 }
 
-function removeHeadersAndFooters(pages: RawPage[]): RawPage[] {
+function isDocumentChrome(line: TextLine): boolean {
+  const text = line.text.trim();
+  return (
+    PAGE_NUMBER_PATTERN.test(text) ||
+    JOURNAL_HEADER_PATTERN.test(text) ||
+    FRONT_MATTER_NOISE_PATTERN.test(text) ||
+    LEGAL_FOOTER_PATTERN.test(text) ||
+    DECORATIVE_GLYPH_PATTERN.test(text)
+  );
+}
+
+export function removeHeadersAndFooters(pages: RawPage[]): RawPage[] {
   if (pages.length < 2) {
     return pages.map((page) => ({
       ...page,
-      lines: page.lines.filter(
-        (line) =>
-          !PAGE_NUMBER_PATTERN.test(line.text.trim()) &&
-          !LEGAL_FOOTER_PATTERN.test(line.text) &&
-          !DECORATIVE_GLYPH_PATTERN.test(line.text.trim()),
-      ),
+      lines: page.lines.filter((line) => !isDocumentChrome(line)),
     }));
   }
 
@@ -374,16 +405,12 @@ function removeHeadersAndFooters(pages: RawPage[]): RawPage[] {
   return pages.map((page) => ({
     ...page,
     lines: page.lines.filter((line) => {
+      if (isDocumentChrome(line)) return false;
       const isMarginLine =
         line.y < page.height * HEADER_FOOTER_ZONE ||
         line.y > page.height * (1 - HEADER_FOOTER_ZONE);
       if (!isMarginLine) return true;
-      return (
-        !repeated.has(normalizeRepeatedLine(line.text)) &&
-        !PAGE_NUMBER_PATTERN.test(line.text.trim()) &&
-        !LEGAL_FOOTER_PATTERN.test(line.text) &&
-        !DECORATIVE_GLYPH_PATTERN.test(line.text.trim())
-      );
+      return !repeated.has(normalizeRepeatedLine(line.text));
     }),
   }));
 }
@@ -421,6 +448,62 @@ function tableMarkdown(lines: TextLine[]): string {
     `| ${Array(columnCount).fill("---").join(" | ")} |`,
     ...normalized.slice(1).map((row) => `| ${row.join(" | ")} |`),
   ].join("\n");
+}
+
+function escapedTableCell(text: string): string {
+  return text.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+}
+
+function recommendationTableMarkdown(
+  caption: string,
+  lines: TextLine[],
+): string | null {
+  const rows: Array<{ number: string; text: string }> = [];
+  for (const line of lines) {
+    const match = line.text.match(TABLE_RECOMMENDATION_PATTERN);
+    if (match) {
+      rows.push({
+        number: match[1],
+        text: line.text.replace(TABLE_RECOMMENDATION_PATTERN, "").trim(),
+      });
+    } else if (rows.length) {
+      const current = rows.at(-1)!;
+      current.text = joinWrappedText(current.text, line.text);
+    }
+  }
+  if (rows.length < 2) return null;
+  return [
+    `**${caption.trim()}**`,
+    "",
+    "| No. | Recommendation |",
+    "| ---: | --- |",
+    ...rows.map(
+      (row) => `| ${row.number} | ${escapedTableCell(row.text)} |`,
+    ),
+  ].join("\n");
+}
+
+function tableEndIndex(
+  lines: TextLine[],
+  startIndex: number,
+  bodyFontSize: number,
+): number {
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const shortHeading =
+      line.fontSize > bodyFontSize * 1.08 &&
+      line.text.length < 100 &&
+      !TERMINAL_PUNCTUATION.test(line.text.trim());
+    if (
+      CAPTION_PATTERN.test(line.text) ||
+      TABLE_CAPTION_PATTERN.test(line.text) ||
+      REFERENCE_PATTERN.test(line.text.trim()) ||
+      shortHeading
+    ) {
+      return index;
+    }
+  }
+  return lines.length;
 }
 
 function unicodeMathToLatex(text: string): string {
@@ -474,7 +557,10 @@ function classifyLine(
     return "footnote";
   }
   if (
-    line.fontSize > bodyFontSize * 1.26 ||
+    (line.fontSize > bodyFontSize * 1.08 &&
+      text.length < 120 &&
+      text.split(/\s+/).length < 18 &&
+      !TERMINAL_PUNCTUATION.test(text)) ||
     REFERENCE_PATTERN.test(text) ||
     (text.length < 90 &&
       /^[A-Z\d][A-Z\d\s,:/&()-]+$/.test(text) &&
@@ -485,6 +571,83 @@ function classifyLine(
   return "paragraph";
 }
 
+function headingMarkdown(text: string, fontSize: number, bodyFontSize: number) {
+  const level = fontSize > bodyFontSize * 1.4
+    ? "#"
+    : fontSize > bodyFontSize * 1.18 || /^A\s+B\s+S\s+T\s+R\s+A\s+C\s+T$/i.test(text)
+      ? "##"
+      : "###";
+  return `${level} ${text}`;
+}
+
+function columnBaselineX(
+  lines: TextLine[],
+  line: TextLine,
+  pageWidth: number,
+  bodyFontSize: number,
+): number {
+  const onRight = line.x >= pageWidth / 2;
+  const candidates = lines
+    .filter(
+      (candidate) =>
+        (candidate.x >= pageWidth / 2) === onRight &&
+        Math.abs(candidate.fontSize - bodyFontSize) < bodyFontSize * 0.3 &&
+        candidate.text.length > 12 &&
+        !CAPTION_PATTERN.test(candidate.text) &&
+        !TABLE_CAPTION_PATTERN.test(candidate.text),
+    )
+    .map((candidate) => candidate.x)
+    .sort((a, b) => a - b);
+  if (!candidates.length) return line.x;
+  return candidates[Math.floor(candidates.length * 0.18)];
+}
+
+function mergeInterruptedMedia(blocks: DocumentBlock[]): DocumentBlock[] {
+  const result: DocumentBlock[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const before = blocks[index];
+    let cursor = index + 1;
+    const media: DocumentBlock[] = [];
+    while (cursor < blocks.length) {
+      const candidate = blocks[cursor];
+      if (candidate.kind === "figure" || candidate.kind === "table") {
+        media.push(candidate);
+        cursor += 1;
+        continue;
+      }
+      if (
+        media.length &&
+        candidate.kind === "paragraph" &&
+        /^Note\b/i.test(candidate.markdown.trim())
+      ) {
+        media.push(candidate);
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+    const after = blocks[cursor];
+    if (
+      before?.kind === "paragraph" &&
+      media.some((block) => block.kind === "figure" || block.kind === "table") &&
+      after?.kind === "paragraph" &&
+      !TERMINAL_PUNCTUATION.test(before.markdown.trim()) &&
+      /^[a-z]/.test(after.markdown.trim())
+    ) {
+      result.push({
+        ...before,
+        markdown: joinWrappedText(before.markdown, after.markdown),
+        confidence: Math.min(before.confidence, after.confidence),
+      });
+      result.push(...media);
+      index = cursor;
+      continue;
+    }
+    result.push(before);
+  }
+  return result;
+}
+
 export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
   const bodyFontSize = median(
     pages.flatMap((page) => page.lines.map((line) => line.fontSize)),
@@ -492,11 +655,68 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
   const blocks: DocumentBlock[] = [];
   const annotationBlocks: DocumentBlock[] = [];
   let footnoteNumber = 1;
+  let inReferences = false;
 
   for (const page of pages) {
     const lines = orderLines(page.lines, page.width, page.height);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
+      const text = line.text.trim();
+
+      if (REFERENCE_PATTERN.test(text)) {
+        inReferences = true;
+        blocks.push({
+          id: crypto.randomUUID(),
+          kind: "heading",
+          markdown: `## ${text.toUpperCase()}`,
+          page: page.page,
+          confidence: page.usedOcr ? 0.69 : 0.96,
+        });
+        continue;
+      }
+
+      if (inReferences) {
+        const entry = text.match(REFERENCE_ENTRY_PATTERN);
+        if (entry) {
+          blocks.push({
+            id: crypto.randomUUID(),
+            kind: "list",
+            markdown: `${entry[1]}. ${text.replace(REFERENCE_ENTRY_PATTERN, "").trim()}`,
+            page: page.page,
+            confidence: page.usedOcr ? 0.67 : 0.92,
+          });
+        } else {
+          const previous = blocks.at(-1);
+          if (previous?.kind === "list") {
+            previous.markdown = joinWrappedText(previous.markdown, text);
+            previous.confidence = Math.min(
+              previous.confidence,
+              page.usedOcr ? 0.67 : 0.92,
+            );
+          }
+        }
+        continue;
+      }
+
+      if (TABLE_CAPTION_PATTERN.test(text)) {
+        const endIndex = tableEndIndex(lines, index, bodyFontSize);
+        const structured = recommendationTableMarkdown(
+          text,
+          lines.slice(index + 1, endIndex),
+        );
+        if (structured) {
+          blocks.push({
+            id: crypto.randomUUID(),
+            kind: "table",
+            markdown: structured,
+            page: page.page,
+            confidence: page.usedOcr ? 0.62 : 0.88,
+          });
+          index = endIndex - 1;
+          continue;
+        }
+      }
+
       const tableRowCount = looksLikeTable(lines, index);
       if (tableRowCount >= 2) {
         blocks.push({
@@ -515,16 +735,19 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         bodyFontSize,
         line.y > page.height * 0.8,
       );
-      let markdown = line.text.trim();
+      let markdown = text;
       if (kind === "heading") {
-        markdown = `${line.fontSize > bodyFontSize * 1.7 ? "#" : "##"} ${markdown}`;
+        markdown = headingMarkdown(markdown, line.fontSize, bodyFontSize);
       } else if (kind === "equation") {
         markdown = `$$\n${unicodeMathToLatex(markdown)}\n$$`;
       } else if (kind === "footnote") {
         markdown = `[^${footnoteNumber}]: ${markdown.replace(/^(?:\d+|[*†‡])\s*/, "")}`;
         footnoteNumber += 1;
       } else if (kind === "list") {
-        markdown = markdown.replace(LIST_PATTERN, "- ");
+        const ordered = markdown.match(ORDERED_LIST_PATTERN);
+        markdown = ordered
+          ? `${ordered[1] ?? ordered[2]}. ${markdown.replace(ORDERED_LIST_PATTERN, "")}`
+          : markdown.replace(LIST_PATTERN, "- ");
       } else if (kind === "paragraph") {
         const isBold = /bold|black|heavy/i.test(line.fontName);
         const isItalic = /italic|oblique/i.test(line.fontName);
@@ -540,14 +763,53 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         previous?.page === page.page &&
         verticalGap >= -bodyFontSize * 0.15 &&
         verticalGap < bodyFontSize * 1.5;
+      const sameColumn =
+        previousLine &&
+        (previousLine.x >= page.width / 2) === (line.x >= page.width / 2);
+      const baselineX = columnBaselineX(
+        lines,
+        line,
+        page.width,
+        bodyFontSize,
+      );
+      const startsIndentedParagraph =
+        Boolean(sameColumn) &&
+        verticalGap > 0 &&
+        line.x - baselineX > bodyFontSize * 0.65 &&
+        previousLine.x - baselineX < bodyFontSize * 0.4;
+
+      const canContinueCaption =
+        previous?.kind === "figure" &&
+        kind === "paragraph" &&
+        isNearbyContinuation &&
+        !startsIndentedParagraph;
+      if (canContinueCaption && previous) {
+        previous.markdown = joinWrappedText(previous.markdown, markdown);
+        continue;
+      }
+
+      const canContinueWrappedHeading =
+        previous?.kind === "heading" &&
+        kind === "heading" &&
+        previous.page === page.page &&
+        verticalGap >= -bodyFontSize * 0.15 &&
+        verticalGap < bodyFontSize * 3 &&
+        WRAPPED_HEADING_END_PATTERN.test(previous.markdown.trim());
+      if (canContinueWrappedHeading && previous) {
+        const continuation = markdown.replace(/^#+\s*/, "");
+        previous.markdown = previous.markdown.endsWith("-")
+          ? `${previous.markdown}${continuation}`
+          : `${previous.markdown} ${continuation}`;
+        continue;
+      }
+
       const canMerge =
         previous?.kind === "paragraph" &&
         kind === "paragraph" &&
-        isNearbyContinuation;
+        isNearbyContinuation &&
+        !startsIndentedParagraph;
       if (canMerge && previous) {
-        previous.markdown = previous.markdown.endsWith("-")
-          ? `${previous.markdown.slice(0, -1)}${markdown}`
-          : `${previous.markdown} ${markdown}`;
+        previous.markdown = joinWrappedText(previous.markdown, markdown);
         continue;
       }
       const canContinueAcrossColumn =
@@ -557,24 +819,21 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         previousLine &&
         line.x > previousLine.x + page.width * 0.18 &&
         line.y < previousLine.y - bodyFontSize * 0.45 &&
-        !/[.!?]["')\]]?$/.test(previousLine.text.trim()) &&
+        !TERMINAL_PUNCTUATION.test(previousLine.text.trim()) &&
         /^[a-z]/.test(line.text.trim());
       if (canContinueAcrossColumn && previous) {
-        previous.markdown = previous.markdown.endsWith("-")
-          ? `${previous.markdown.slice(0, -1)}${markdown}`
-          : `${previous.markdown} ${markdown}`;
+        previous.markdown = joinWrappedText(previous.markdown, markdown);
         continue;
       }
       const canContinueList =
         previous?.kind === "list" &&
         kind === "paragraph" &&
-        isNearbyContinuation &&
-        previousLine &&
-        line.x >= previousLine.x - bodyFontSize * 0.5;
+        ((isNearbyContinuation &&
+          previousLine &&
+          line.x >= previousLine.x - bodyFontSize * 0.5) ||
+          (previous.page !== page.page && /^[a-z]/.test(line.text.trim())));
       if (canContinueList && previous) {
-        previous.markdown = previous.markdown.endsWith("-")
-          ? `${previous.markdown.slice(0, -1)}${markdown}`
-          : `${previous.markdown} ${markdown}`;
+        previous.markdown = joinWrappedText(previous.markdown, markdown);
         continue;
       }
 
@@ -600,7 +859,10 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
       }
     }
   }
-  return [...mergeFlowingParagraphs(blocks), ...annotationBlocks];
+  return [
+    ...mergeInterruptedMedia(mergeFlowingParagraphs(blocks)),
+    ...annotationBlocks,
+  ];
 }
 
 async function renderPage(page: PDFPageProxy, scale = 1.6) {
@@ -673,6 +935,48 @@ function ocrTextToLines(
   }));
 }
 
+export function figureCropBounds(
+  page: Pick<RawPage, "width" | "height" | "lines" | "canvas">,
+  caption: TextLine,
+): { x: number; y: number; width: number; height: number } | null {
+  const bodyFontSize = median(page.lines.map((line) => line.fontSize));
+  let captionBottom = caption.y + caption.height;
+  const below = page.lines
+    .filter((line) => line.y > caption.y && line !== caption)
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+
+  for (const line of below) {
+    const gap = line.y - captionBottom;
+    if (
+      gap >= -bodyFontSize * 0.2 &&
+      gap < bodyFontSize * 1.7 &&
+      Math.abs(line.x - caption.x) < page.width * 0.12 &&
+      !CAPTION_PATTERN.test(line.text) &&
+      !TABLE_CAPTION_PATTERN.test(line.text)
+    ) {
+      captionBottom = Math.max(captionBottom, line.y + line.height);
+      continue;
+    }
+    if (gap >= bodyFontSize * 1.7) break;
+  }
+
+  const textAfterFigure = below.find(
+    (line) =>
+      line.y - captionBottom >
+      Math.max(page.height * 0.055, bodyFontSize * 4),
+  );
+  const scaleY = page.canvas.height / page.height;
+  const x = Math.floor(page.canvas.width * 0.055);
+  const y = Math.ceil((captionBottom + bodyFontSize * 0.65) * scaleY);
+  const bottom = textAfterFigure
+    ? Math.floor((textAfterFigure.y - bodyFontSize * 0.65) * scaleY)
+    : Math.floor(page.canvas.height * 0.95);
+  const width = page.canvas.width - x * 2;
+  const height = bottom - y;
+  if (width < 120 || height < 80) return null;
+  return { x, y, width, height };
+}
+
 async function extractFigures(
   pages: RawPage[],
   onProgress: ProgressHandler,
@@ -685,44 +989,23 @@ async function extractFigures(
     throwIfAborted(signal);
     const captions = page.lines.filter((line) => CAPTION_PATTERN.test(line.text));
     for (const caption of captions) {
-      const canvasScale = page.canvas.height / page.height;
-      const captionTop = Math.max(1, Math.floor(caption.y * canvasScale));
-      const nearestTextAbove = page.lines
-        .filter(
-          (line) =>
-            line.y < caption.y &&
-            line.y > caption.y - page.height * 0.48 &&
-            !CAPTION_PATTERN.test(line.text),
-        )
-        .sort((a, b) => b.y - a.y)[0];
-      const estimatedTop = nearestTextAbove
-        ? Math.floor(
-            (nearestTextAbove.y + nearestTextAbove.height * 1.8) * canvasScale,
-          )
-        : Math.floor(captionTop - page.canvas.height * 0.36);
-      const top = Math.max(
-        Math.floor(page.canvas.height * 0.04),
-        Math.min(captionTop - 40, estimatedTop),
-      );
-      const height = captionTop - top - 8;
-      if (height < 80) continue;
-
-      const horizontalPadding = Math.floor(page.canvas.width * 0.055);
+      const bounds = figureCropBounds(page, caption);
+      if (!bounds) continue;
       const crop = document.createElement("canvas");
-      crop.width = page.canvas.width - horizontalPadding * 2;
-      crop.height = height;
+      crop.width = bounds.width;
+      crop.height = bounds.height;
       const context = crop.getContext("2d");
       if (!context) continue;
       context.drawImage(
         page.canvas,
-        horizontalPadding,
-        top,
-        crop.width,
-        height,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
         0,
         0,
-        crop.width,
-        height,
+        bounds.width,
+        bounds.height,
       );
       const blob = await canvasToBlob(crop);
       const filename = `images/figure-${String(figureNumber).padStart(3, "0")}.png`;
@@ -752,16 +1035,13 @@ function attachFigures(
   blocks: DocumentBlock[],
   images: ExtractedImage[],
 ): DocumentBlock[] {
-  const imageByPageAndCaption = new Map(
-    images.map((image) => [
-      `${image.page}:${normalizeRepeatedLine(image.caption)}`,
-      image,
-    ]),
-  );
   return blocks.map((block) => {
     if (block.kind !== "figure") return block;
-    const image = imageByPageAndCaption.get(
-      `${block.page}:${normalizeRepeatedLine(block.markdown)}`,
+    const normalizedBlock = normalizeRepeatedLine(block.markdown);
+    const image = images.find(
+      (candidate) =>
+        candidate.page === block.page &&
+        normalizedBlock.startsWith(normalizeRepeatedLine(candidate.caption)),
     );
     if (!image) return block;
     const alt = block.markdown.replace(CAPTION_PATTERN, "").trim() || "Figure";
