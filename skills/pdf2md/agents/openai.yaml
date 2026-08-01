@@ -1,0 +1,4 @@
+interface:
+  display_name: "PDF2MD"
+  short_description: "Build and audit private PDF-to-Markdown converters"
+  default_prompt: "Use $pdf2md to build or audit a private, layout-aware PDF-to-Markdown conversion workflow."
