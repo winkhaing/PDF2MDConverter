@@ -2,6 +2,115 @@ import type { DocumentBlock } from "./types";
 
 const TERMINAL_PUNCTUATION = /[.!?]["')\]]?$/;
 const LOWERCASE_START = /^[a-z]/;
+const SOFT_SENTENCE_END = /(?:[,;:–—-]|\b(?:and|as|at|because|between|but|by|for|from|in|including|of|on|or|that|than|the|to|which|while|with))\s*["')\]]?$/i;
+
+export interface MarkdownFlowIssue {
+  before: number;
+  after: number;
+  reason: "open-sentence" | "interrupted-sentence";
+  score: number;
+}
+
+export interface MarkdownFlowAudit {
+  issues: MarkdownFlowIssue[];
+  score: number;
+}
+
+function plainMarkdownText(markdown: string): string {
+  return markdown
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/^[#>*+-]+\s*/gm, "")
+    .replace(/\\([\[\]`*_\\])/g, "$1")
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function markdownChunkKind(chunk: string): "prose" | "media" | "boundary" {
+  const clean = chunk.trim();
+  const plain = plainMarkdownText(clean);
+  if (
+    /^!\[[^\]]*\]\([^)]*\)/.test(clean) ||
+    /^<u><em>(?:figure|fig\.?|table)\b/i.test(clean) ||
+    /^\|.*\|/m.test(clean)
+  ) {
+    return "media";
+  }
+  if (
+    /^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\$\$|\[\^\d+\]:)/m.test(clean) ||
+    /^(?:accepted|copyright|corresponding author|doi\b|https?:\/\/|published online|received|www\.)/i.test(plain)
+  ) {
+    return "boundary";
+  }
+  return plain ? "prose" : "boundary";
+}
+
+export function paragraphContinuationStrength(
+  leftMarkdown: string,
+  rightMarkdown: string,
+): number {
+  const left = plainMarkdownText(leftMarkdown);
+  const right = plainMarkdownText(rightMarkdown);
+  if (!left || !right) return 0;
+
+  const terminal = TERMINAL_PUNCTUATION.test(left);
+  const lowercaseStart = LOWERCASE_START.test(right);
+  const leftWords = left.split(/\s+/).length;
+  const rightWords = right.split(/\s+/).length;
+  let score = terminal ? -3 : 2;
+  if (lowercaseStart) score += 3;
+  if (!terminal && SOFT_SENTENCE_END.test(left)) score += 3;
+  if (!terminal && leftWords <= 8) score += 1;
+  if (!terminal && rightWords <= 8) score += 1;
+  return Math.max(0, score);
+}
+
+export function inspectMarkdownFlow(markdown: string): MarkdownFlowAudit {
+  const chunks = markdown
+    .trim()
+    .split(/\n{2,}/)
+    .map((value, index) => ({ value: value.trim(), index }))
+    .filter((chunk) => chunk.value);
+  const issues: MarkdownFlowIssue[] = [];
+  let previousProse: { value: string; index: number } | null = null;
+  let crossedMedia = false;
+
+  for (const chunk of chunks) {
+    const kind = markdownChunkKind(chunk.value);
+    if (kind === "media") {
+      if (previousProse) crossedMedia = true;
+      continue;
+    }
+    if (kind === "boundary") {
+      previousProse = null;
+      crossedMedia = false;
+      continue;
+    }
+    if (previousProse) {
+      const score = paragraphContinuationStrength(
+        previousProse.value,
+        chunk.value,
+      );
+      if (score >= 5) {
+        issues.push({
+          before: previousProse.index,
+          after: chunk.index,
+          reason: crossedMedia ? "interrupted-sentence" : "open-sentence",
+          score,
+        });
+      }
+    }
+    previousProse = chunk;
+    crossedMedia = false;
+  }
+
+  return {
+    issues,
+    score: issues.reduce((total, issue) => total + issue.score, 0),
+  };
+}
 
 export function blocksToMarkdown(blocks: DocumentBlock[]): string {
   return blocks

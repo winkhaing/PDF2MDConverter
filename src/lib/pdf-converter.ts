@@ -1,4 +1,10 @@
-import { mergeFlowingParagraphs, safeBaseName } from "./markdown.ts";
+import {
+  blocksToMarkdown,
+  inspectMarkdownFlow,
+  mergeFlowingParagraphs,
+  paragraphContinuationStrength,
+  safeBaseName,
+} from "./markdown.ts";
 import {
   PasswordRequiredError,
   type BlockKind,
@@ -219,6 +225,7 @@ export function textItemsToLines(
     Util: { transform: (a: number[], b: number[]) => number[] };
   },
   pageNumber: number,
+  recoveryMode = false,
 ): TextLine[] {
   const runs: Array<{
     text: string;
@@ -291,10 +298,19 @@ export function textItemsToLines(
       const markerCanJoin =
         /^(?:\d{1,3}[.)]?|[-•▪◦])$/.test(currentText) &&
         run.x - right < fontSize * 2;
+      const citationCanJoin =
+        /\d+(?:[,-]\d+)*$/.test(currentText) &&
+        run.x - right < Math.max(8, fontSize * 1.4);
       const previousRun = current?.at(-1);
       const explicitLineEnd = previousRun?.hasEOL === true;
+      const explicitSeparatedLine =
+        explicitLineEnd &&
+        run.x - right > Math.max(5, Math.min(14, fontSize * 0.75));
       const unusuallyLargeGap =
-        run.x - right > Math.max(columnGapThreshold, fontSize * 2.2);
+        run.x - right > Math.max(
+          recoveryMode ? columnGapThreshold * 0.78 : columnGapThreshold,
+          fontSize * (recoveryMode ? 1.65 : 2.2),
+        );
       const currentFontSize = current
         ? median(current.map((value) => value.fontSize))
         : run.fontSize;
@@ -305,8 +321,9 @@ export function textItemsToLines(
         run.x - right > Math.min(currentFontSize, run.fontSize) * 0.5;
       if (
         !current ||
-        ((explicitLineEnd || unusuallyLargeGap || mixedLayoutScale) &&
-          !markerCanJoin)
+        ((explicitSeparatedLine || unusuallyLargeGap || mixedLayoutScale) &&
+          !markerCanJoin &&
+          !citationCanJoin)
       ) {
         segments.push([run]);
       } else {
@@ -426,7 +443,11 @@ export function layoutTransitions(
     .filter((transition): transition is LayoutTransition => transition !== null);
 }
 
-function columnStarts(lines: TextLine[], pageWidth: number): number[] {
+function columnStarts(
+  lines: TextLine[],
+  pageWidth: number,
+  recoveryMode = false,
+): number[] {
   const candidates = lines
     .filter(
       (line) =>
@@ -453,7 +474,9 @@ function columnStarts(lines: TextLine[], pageWidth: number): number[] {
     }
   }
 
-  const minimumCount = Math.max(2, Math.floor(candidates.length * 0.055));
+  const minimumCount = recoveryMode
+    ? 2
+    : Math.max(2, Math.floor(candidates.length * 0.055));
   const starts = clusters
     .filter((cluster) => cluster.values.length >= minimumCount)
     .sort((a, b) => a.center - b.center)
@@ -474,18 +497,22 @@ function nearestColumnIndex(line: TextLine, starts: number[]): number {
   return closest;
 }
 
-function orderRegion(lines: TextLine[], pageWidth: number): TextLine[] {
+function orderRegion(
+  lines: TextLine[],
+  pageWidth: number,
+  recoveryMode = false,
+): TextLine[] {
   const sorted = [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
   if (sorted.length < 4) return sorted;
-  const starts = columnStarts(sorted, pageWidth);
+  const starts = columnStarts(sorted, pageWidth, recoveryMode);
   if (starts.length < 2) return sorted;
 
   const columns = starts.map(() => [] as TextLine[]);
   for (const line of sorted) {
     columns[nearestColumnIndex(line, starts)].push(line);
   }
-  const populated = columns.filter(
-    (column) => column.length >= Math.max(2, sorted.length * 0.08),
+  const populated = columns.filter((column) =>
+    column.length >= Math.max(2, sorted.length * (recoveryMode ? 0.04 : 0.08))
   );
   if (populated.length < 2) return sorted;
   return populated.flatMap((column) =>
@@ -497,6 +524,7 @@ export function orderLines(
   lines: TextLine[],
   pageWidth: number,
   pageHeight = Math.max(...lines.map((line) => line.y + line.height), 1),
+  recoveryMode = false,
 ): TextLine[] {
   if (lines.length < 8) {
     return [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
@@ -518,12 +546,15 @@ export function orderLines(
   }
   if (remaining.length) segments.push(remaining);
 
-  return segments.flatMap((segment) => orderLineSegment(segment, pageWidth));
+  return segments.flatMap((segment) =>
+    orderLineSegment(segment, pageWidth, recoveryMode)
+  );
 }
 
 function orderLineSegment(
   lines: TextLine[],
   pageWidth: number,
+  recoveryMode = false,
 ): TextLine[] {
   if (lines.length < 4) {
     return [...lines].sort((a, b) => a.y - b.y || a.x - b.x);
@@ -552,7 +583,7 @@ function orderLineSegment(
         line.y < regionBottom &&
         !fullWidthSet.has(line),
     );
-    ordered.push(...orderRegion(region, pageWidth));
+    ordered.push(...orderRegion(region, pageWidth, recoveryMode));
     if (event) {
       ordered.push(event.line);
       regionTop = event.line.y + event.line.height * 0.5;
@@ -1425,8 +1456,9 @@ function columnBaselineX(
   lines: TextLine[],
   line: TextLine,
   pageWidth: number,
+  recoveryMode = false,
 ): number {
-  const starts = columnStarts(lines, pageWidth);
+  const starts = columnStarts(lines, pageWidth, recoveryMode);
   return starts[nearestColumnIndex(line, starts)] ?? line.x;
 }
 
@@ -1476,7 +1508,85 @@ function mergeInterruptedMedia(blocks: DocumentBlock[]): DocumentBlock[] {
   return result;
 }
 
-export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
+function fragmentedFlowPairs(blocks: DocumentBlock[]): Array<{
+  before: number;
+  after: number;
+  score: number;
+}> {
+  const pairs: Array<{ before: number; after: number; score: number }> = [];
+  for (let before = 0; before < blocks.length; before += 1) {
+    const left = blocks[before];
+    if (left.kind !== "paragraph") continue;
+    let after = before + 1;
+    while (
+      after < blocks.length &&
+      (blocks[after].kind === "figure" || blocks[after].kind === "table")
+    ) {
+      after += 1;
+    }
+    const right = blocks[after];
+    if (
+      right?.kind !== "paragraph" ||
+      right.page < left.page ||
+      right.page - left.page > 1
+    ) {
+      continue;
+    }
+    const score = paragraphContinuationStrength(left.markdown, right.markdown);
+    if (score >= 5) pairs.push({ before, after, score });
+  }
+  return pairs;
+}
+
+function suspectedFragmentPages(blocks: DocumentBlock[]): number[] {
+  const pages = new Set<number>();
+  for (const pair of fragmentedFlowPairs(blocks)) {
+    pages.add(blocks[pair.before].page);
+    pages.add(blocks[pair.after].page);
+  }
+  return [...pages].sort((a, b) => a - b);
+}
+
+function repairFragmentedParagraphs(blocks: DocumentBlock[]): DocumentBlock[] {
+  const working = blocks.map((block) => ({ ...block }));
+  let repairCount = 0;
+  const repairLimit = Math.max(1, blocks.length);
+
+  while (repairCount < repairLimit) {
+    const pair = fragmentedFlowPairs(working)[0];
+    if (!pair) break;
+    const left = working[pair.before];
+    const right = working[pair.after];
+    const media = working.slice(pair.before + 1, pair.after);
+    working.splice(
+      pair.before,
+      pair.after - pair.before + 1,
+      {
+        ...left,
+        markdown: joinWrappedText(left.markdown, right.markdown),
+        confidence: Math.min(left.confidence, right.confidence),
+      },
+      ...media,
+    );
+    repairCount += 1;
+  }
+
+  return working;
+}
+
+interface LinesToBlocksOptions {
+  recoveryMode?: boolean;
+  recoveryPages?: Iterable<number>;
+}
+
+export function linesToBlocks(
+  pages: RawPage[],
+  options: LinesToBlocksOptions = {},
+): DocumentBlock[] {
+  const recoveryMode = options.recoveryMode === true;
+  const recoveryPages = options.recoveryPages
+    ? new Set(options.recoveryPages)
+    : null;
   const profile = buildDocumentProfile(pages);
   const bodyFontSize = profile.bodyFontSize;
   const blocks: DocumentBlock[] = [];
@@ -1497,6 +1607,8 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
     .sort((a, b) => b.fontSize - a.fontSize || a.y - b.y)[0];
 
   for (const page of pages) {
+    const recoverPage = recoveryMode &&
+      (!recoveryPages || recoveryPages.has(page.page));
     const figureRegions = detectFigureRegions(page, profile);
     const tableRegions = detectTableRegions(page, profile);
     const lines = orderLines(
@@ -1529,8 +1641,9 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
       }),
       page.width,
       page.height,
+      recoverPage,
     );
-    const starts = columnStarts(lines, page.width);
+    const starts = columnStarts(lines, page.width, recoverPage);
 
     const looksLikeReferenceStart = (index: number): boolean => {
       const match = lines[index]?.text.match(REFERENCE_ENTRY_PATTERN);
@@ -1686,6 +1799,7 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
         lines,
         line,
         page.width,
+        recoverPage,
       );
       const startsIndentedParagraph =
         Boolean(sameColumn) &&
@@ -1794,8 +1908,11 @@ export function linesToBlocks(pages: RawPage[]): DocumentBlock[] {
       }
     }
   }
+  const reconstructed = mergeInterruptedMedia(mergeFlowingParagraphs(blocks));
   return [
-    ...mergeInterruptedMedia(mergeFlowingParagraphs(blocks)),
+    ...(recoveryMode
+      ? repairFragmentedParagraphs(reconstructed)
+      : reconstructed),
     ...annotationBlocks,
   ];
 }
@@ -2000,6 +2117,63 @@ function attachFigures(
   });
 }
 
+function pageListLabel(pages: number[]): string {
+  if (!pages.length) return "the document";
+  const visible = pages.slice(0, 5).join(", ");
+  return pages.length > 5 ? `pages ${visible}, and ${pages.length - 5} more` :
+    `${pages.length === 1 ? "page" : "pages"} ${visible}`;
+}
+
+async function rereadOriginalPages(
+  pdf: { getPage: (pageNumber: number) => Promise<PDFPageProxy> },
+  pdfjs: Parameters<typeof textItemsToLines>[2],
+  rawPages: RawPage[],
+  pageNumbers: number[],
+  onProgress: ProgressHandler,
+  signal?: AbortSignal,
+): Promise<RawPage[]> {
+  const reread = rawPages.map((page) => ({ ...page }));
+  for (let index = 0; index < pageNumbers.length; index += 1) {
+    throwIfAborted(signal);
+    const pageNumber = pageNumbers[index];
+    const original = reread.find((page) => page.page === pageNumber);
+    if (!original || original.usedOcr) continue;
+    onProgress({
+      phase: "assembling",
+      page: pageNumber,
+      total: rawPages.length,
+      percent: 96 + Math.round(((index + 1) / pageNumbers.length) * 2),
+      message: `Re-reading original layout on page ${pageNumber}`,
+    });
+    const page = await pdf.getPage(pageNumber);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = original.width / Math.max(1, baseViewport.width);
+    const viewport = page.getViewport({ scale });
+    const textContent = await page.getTextContent();
+    const recoveredLines = textItemsToLines(
+      textContent.items as Array<Record<string, unknown>>,
+      viewport,
+      pdfjs,
+      pageNumber,
+      true,
+    );
+    const originalCharacters = original.lines.reduce(
+      (total, line) => total + line.text.length,
+      0,
+    );
+    const recoveredCharacters = recoveredLines.reduce(
+      (total, line) => total + line.text.length,
+      0,
+    );
+    if (recoveredCharacters >= originalCharacters * 0.95) {
+      const position = reread.findIndex((candidate) => candidate.page === pageNumber);
+      reread[position] = { ...original, lines: recoveredLines };
+    }
+    await yieldToBrowser();
+  }
+  return reread;
+}
+
 export async function convertPdf(
   file: File,
   password: string,
@@ -2153,6 +2327,50 @@ export async function convertPdf(
     message: "Reconstructing reading order",
   });
   let blocks = linesToBlocks(cleanedPages);
+  onProgress({
+    phase: "assembling",
+    page: pdf.numPages,
+    total: pdf.numPages,
+    percent: 95,
+    message: "Checking sentence and paragraph continuity",
+  });
+  await yieldToBrowser();
+  const firstAudit = inspectMarkdownFlow(blocksToMarkdown(blocks));
+  if (firstAudit.issues.length) {
+    const suspectPages = suspectedFragmentPages(blocks);
+    onProgress({
+      phase: "assembling",
+      page: suspectPages[0] ?? pdf.numPages,
+      total: pdf.numPages,
+      percent: 96,
+      message: `Rechecking ${pageListLabel(suspectPages)} for fragmented text`,
+    });
+    const rereadPages = await rereadOriginalPages(
+      pdf,
+      pdfjs,
+      rawPages,
+      suspectPages,
+      onProgress,
+      signal,
+    );
+    const recoveredPages = removeHeadersAndFooters(rereadPages);
+    const recoveredBlocks = linesToBlocks(recoveredPages, {
+      recoveryMode: true,
+      recoveryPages: suspectPages,
+    });
+    const repairedBlocks = repairFragmentedParagraphs(blocks);
+    const recoveredScore = inspectMarkdownFlow(
+      blocksToMarkdown(recoveredBlocks),
+    ).score;
+    const repairedScore = inspectMarkdownFlow(
+      blocksToMarkdown(repairedBlocks),
+    ).score;
+    if (recoveredScore <= repairedScore && recoveredScore < firstAudit.score) {
+      blocks = recoveredBlocks;
+    } else if (repairedScore < firstAudit.score) {
+      blocks = repairedBlocks;
+    }
+  }
   blocks = attachFigures(blocks, images);
   const titleBlock = blocks.find((block) => block.kind === "heading");
   const title =
@@ -2169,7 +2387,7 @@ export async function convertPdf(
     page: pdf.numPages,
     total: pdf.numPages,
     percent: 100,
-    message: "Ready to review",
+    message: "Continuity check complete",
   });
 
   return {

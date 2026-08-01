@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   blocksToMarkdown,
+  inspectMarkdownFlow,
   mergeFlowingParagraphs,
   safeBaseName,
 } from "../src/lib/markdown.ts";
@@ -72,6 +73,40 @@ test("joins flowing paragraphs across pages without losing confidence", () => {
   assert.equal(blocks[0].confidence, 0.62);
 });
 
+test("audits the complete Markdown for interrupted sentence fragments", () => {
+  const audit = inspectMarkdownFlow([
+    "Based on the responses we",
+    "<u><em>Figure 1. Components of VBHC interventions.</em></u>",
+    "refined the recommendations for implementation.",
+  ].join("\n\n"));
+
+  assert.equal(audit.issues.length, 1);
+  assert.equal(audit.issues[0].reason, "interrupted-sentence");
+  assert.ok(audit.score >= 5);
+
+  const tableAudit = inspectMarkdownFlow([
+    "The evidence review found",
+    "<u><em>Table 1. Included studies.</em></u>",
+    "| Study | Result |\n| --- | --- |\n| Trial A | Benefit |",
+    "that the intervention improved outcomes.",
+  ].join("\n\n"));
+  assert.equal(tableAudit.issues[0]?.reason, "interrupted-sentence");
+});
+
+test("does not flag intentional paragraph and section boundaries", () => {
+  const audit = inspectMarkdownFlow([
+    "The first paragraph is complete.",
+    "The second paragraph starts a separate idea.",
+    "## Results",
+    "The analysis found a clinically important difference.",
+    "- Prespecified subgroup analysis",
+    "Published Online: April 8, 2026",
+    "[doi:https://doi.org/10.1016/example](https://doi.org/10.1016/example)",
+  ].join("\n\n"));
+
+  assert.deepEqual(audit, { issues: [], score: 0 });
+});
+
 test("separates text runs that share a baseline but belong to different columns", () => {
   const lines = textItemsToLines(
     [
@@ -130,6 +165,38 @@ test("uses explicit PDF line endings before ordering justified columns", () => {
     "Norway (highest participation >60%),",
     "Poland (lowest participation 33%)",
   ]);
+});
+
+test("keeps a same-line continuation after a superscript citation", () => {
+  const lines = textItemsToLines(
+    [
+      {
+        str: "needed for its successful application.",
+        transform: [12, 0, 0, 12, 53, 250],
+        width: 95,
+        fontName: "Body",
+      },
+      {
+        str: "4",
+        transform: [8, 0, 0, 8, 206, 246.5],
+        width: 3,
+        fontName: "Body",
+        hasEOL: true,
+      },
+      {
+        str: "Others, such as the European Commission",
+        transform: [12, 0, 0, 12, 214, 250],
+        width: 120,
+        fontName: "Body",
+      },
+    ],
+    { transform: [1, 0, 0, 1, 0, 0], width: 612, height: 792 },
+    { Util: { transform: (_viewport, item) => item } },
+    1,
+  );
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0].text, /application\. ?4 Others, such as the European Commission/);
 });
 
 test("does not merge rotated watermark runs into horizontal prose", () => {
@@ -369,6 +436,32 @@ test("keeps original first-line indentation as a paragraph break", () => {
     markdown,
     /complete thought\.\n\nA new indented paragraph begins here and continues/,
   );
+});
+
+test("second-pass reconstruction joins a high-confidence fragmented sentence", () => {
+  const page = rawPage(1, [
+    textLine("The intervention improves", 53, 300, 240),
+    textLine("patient outcomes across settings.", 53, 350, 240),
+  ]);
+  const firstPass = blocksToMarkdown(linesToBlocks([page]));
+  const recovered = blocksToMarkdown(linesToBlocks([page], {
+    recoveryMode: true,
+  }));
+
+  assert.match(firstPass, /improves\n\npatient outcomes/);
+  assert.match(recovered, /improves patient outcomes across settings\./);
+  assert.doesNotMatch(recovered, /improves\n\npatient outcomes/);
+});
+
+test("second-pass reconstruction preserves real paragraph separation", () => {
+  const recovered = blocksToMarkdown(linesToBlocks([
+    rawPage(1, [
+      textLine("The first paragraph is complete.", 53, 300, 240),
+      textLine("The second paragraph starts a separate idea.", 53, 350, 240),
+    ]),
+  ], { recoveryMode: true }));
+
+  assert.match(recovered, /complete\.\n\nThe second paragraph/);
 });
 
 test("moves a figure after the paragraph it interrupted", () => {

@@ -21,6 +21,7 @@ macOS or Windows application.
 - two-column reading order reconstructed as one continuous Markdown flow
 - scanned and image-only PDFs using bundled English OCR
 - paragraphs continued across page boundaries
+- final Markdown continuity audit with targeted original-page reconstruction when sentence fragments are detected
 - repeated headers, footers, and page numbers removed
 - figures extracted into an `images/` folder and paired with captions
 - tables converted to Markdown (or editable Markdown source for correction)
