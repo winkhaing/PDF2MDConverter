@@ -16,11 +16,27 @@ export interface MarkdownFlowAudit {
   score: number;
 }
 
+function stripInlineMarkup(markdown: string): string {
+  let plain = "";
+  for (let index = 0; index < markdown.length; index += 1) {
+    const character = markdown[index];
+    const looksLikeTag =
+      character === "<" && /[A-Za-z!/]/.test(markdown[index + 1] ?? "");
+    const closingBracket = looksLikeTag ? markdown.indexOf(">", index + 2) : -1;
+    if (closingBracket !== -1) {
+      plain += " ";
+      index = closingBracket;
+      continue;
+    }
+    plain += character;
+  }
+  return plain;
+}
+
 function plainMarkdownText(markdown: string): string {
-  return markdown
+  return stripInlineMarkup(markdown)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/<[^>]+>/g, "")
     .replace(/^[#>*+-]+\s*/gm, "")
     .replace(/\\([\[\]`*_\\])/g, "$1")
     .replace(/[*_`]/g, "")

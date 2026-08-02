@@ -37,6 +37,11 @@ PDF content is processed in the browser or desktop webview. The app has no
 upload API, analytics, account system, or document storage. OCR language data
 and processing code are bundled with the app.
 
+Cloudflare Worker observability, invocation-log persistence, and trace
+persistence are explicitly disabled in `wrangler.jsonc`. Cloudflare still
+handles normal HTTPS connection metadata at its edge; PDF bytes and converted
+content are never sent to the Worker.
+
 The converter accepts PDFs up to 100 MB and 300 pages. It restricts rendered
 page dimensions and total canvas memory, restricts script execution with a
 Content Security Policy, and does not activate links embedded in PDFs. Only
@@ -71,6 +76,7 @@ Build and verify:
 npm run lint
 npm test
 npm run desktop:build
+npm run deploy:dry-run
 ```
 
 Run the desktop application:
@@ -84,6 +90,26 @@ Create a local desktop bundle:
 ```bash
 npm run desktop build
 ```
+
+## Cloudflare deployment
+
+Create a dedicated Cloudflare API token limited to the PDF2MD account and the
+minimum Worker-script edit permission required by Wrangler. Store it in a
+password manager or CI secret—never in the repository—then expose it only to
+the deployment process as `CLOUDFLARE_API_TOKEN`. Set
+`CLOUDFLARE_ACCOUNT_ID` as well when the token can access more than one
+account.
+
+Deploy the tested build with:
+
+```bash
+npm run deploy
+```
+
+The deployment script rebuilds the app, deploys the generated Worker config,
+uses strict conflict checking, and labels the Cloudflare version with the
+current Git commit. The Worker name, compatibility date, preview policy, and
+disabled observability policy are versioned in `wrangler.jsonc`.
 
 Unsigned macOS and Windows installers are built automatically by GitHub Actions
 when a version tag beginning with `v` is pushed.
