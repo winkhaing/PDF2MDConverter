@@ -108,8 +108,9 @@ npm run deploy
 
 The deployment script rebuilds the app, deploys the generated Worker config,
 uses strict conflict checking, and labels the Cloudflare version with the
-current Git commit. The Worker name, compatibility date, preview policy, and
-disabled observability policy are versioned in `wrangler.jsonc`.
+current Git commit when Git metadata or a CI commit SHA is available. The
+Worker name, compatibility date, preview policy, and disabled observability
+policy are versioned in `wrangler.jsonc`.
 
 Unsigned macOS and Windows installers are built automatically by GitHub Actions
 when a version tag beginning with `v` is pushed.

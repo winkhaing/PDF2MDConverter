@@ -4,6 +4,7 @@ import {
   blocksToMarkdown,
   inspectMarkdownFlow,
   mergeFlowingParagraphs,
+  paragraphContinuationStrength,
   safeBaseName,
 } from "../src/lib/markdown.ts";
 import {
@@ -105,6 +106,27 @@ test("does not flag intentional paragraph and section boundaries", () => {
   ].join("\n\n"));
 
   assert.deepEqual(audit, { issues: [], score: 0 });
+});
+
+test("preserves literal angle-bracket notation during continuity checks", () => {
+  assert.equal(
+    paragraphContinuationStrength("Return Array<string>.", "Next section"),
+    0,
+  );
+  assert.equal(
+    paragraphContinuationStrength(
+      'Use <span title="a > b">text</span>.',
+      "Next section",
+    ),
+    0,
+  );
+  assert.equal(
+    paragraphContinuationStrength(
+      "<u><em>Figure 1.</em></u>",
+      "Next section",
+    ),
+    0,
+  );
 });
 
 test("separates text runs that share a baseline but belong to different columns", () => {

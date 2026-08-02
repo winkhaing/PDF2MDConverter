@@ -16,9 +16,23 @@ function run(command, args) {
   });
 }
 
-const revision = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
-  encoding: "utf8",
-}).trim();
+function deploymentRevision() {
+  const environmentRevision =
+    process.env.GITHUB_SHA ??
+    process.env.CF_PAGES_COMMIT_SHA ??
+    process.env.SOURCE_VERSION;
+  if (environmentRevision && /^[0-9a-f]{7,64}$/i.test(environmentRevision)) {
+    return environmentRevision.slice(0, 12).toLowerCase();
+  }
+  try {
+    return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
 
 if (!dryRun && !process.env.CLOUDFLARE_API_TOKEN) {
   console.warn(
@@ -42,7 +56,13 @@ const deployArgs = [
 if (dryRun) {
   deployArgs.push("--dry-run");
 } else {
-  deployArgs.push("--message", `Git ${revision}`, "--tag", revision);
+  const revision = deploymentRevision();
+  if (revision) {
+    deployArgs.push("--message", `Git ${revision}`, "--tag", revision);
+  } else {
+    console.warn("Git revision unavailable; deploying without a version tag.");
+    deployArgs.push("--message", "Source deployment (Git revision unavailable)");
+  }
 }
 
 await run(npxCommand, deployArgs);

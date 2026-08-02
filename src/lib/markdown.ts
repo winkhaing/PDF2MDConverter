@@ -16,25 +16,36 @@ export interface MarkdownFlowAudit {
   score: number;
 }
 
-function stripInlineMarkup(markdown: string): string {
+const SUPPORTED_INLINE_TAGS = [
+  "<u>",
+  "</u>",
+  "<em>",
+  "</em>",
+  "<sup>",
+  "</sup>",
+  "<sub>",
+  "</sub>",
+];
+
+function stripSupportedInlineMarkup(markdown: string): string {
   let plain = "";
   for (let index = 0; index < markdown.length; index += 1) {
-    const character = markdown[index];
-    const looksLikeTag =
-      character === "<" && /[A-Za-z!/]/.test(markdown[index + 1] ?? "");
-    const closingBracket = looksLikeTag ? markdown.indexOf(">", index + 2) : -1;
-    if (closingBracket !== -1) {
+    const remainder = markdown.slice(index).toLowerCase();
+    const supportedTag = SUPPORTED_INLINE_TAGS.find((tag) =>
+      remainder.startsWith(tag),
+    );
+    if (supportedTag) {
       plain += " ";
-      index = closingBracket;
+      index += supportedTag.length - 1;
       continue;
     }
-    plain += character;
+    plain += markdown[index];
   }
   return plain;
 }
 
 function plainMarkdownText(markdown: string): string {
-  return stripInlineMarkup(markdown)
+  return stripSupportedInlineMarkup(markdown)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^[#>*+-]+\s*/gm, "")
