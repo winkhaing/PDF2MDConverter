@@ -90,10 +90,20 @@ function dedupeRepeatedPhrase(text: string): string {
 }
 
 function escapeMarkdownText(text: string): string {
-  return text
-    .replace(/\\/g, "\\\\")
-    .replace(/<(?=[A-Za-z!/])/g, "&lt;")
-    .replace(/([\[\]`*_])/g, "\\$1");
+  let escaped = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "\\") {
+      escaped += "\\\\";
+    } else if (character === "<" && /[A-Za-z!/]/.test(text[index + 1] ?? "")) {
+      escaped += "&lt;";
+    } else if ("[]`*_".includes(character)) {
+      escaped += `\\${character}`;
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped;
 }
 
 function mediaTitleMarkdown(text: string): string {
@@ -1274,11 +1284,32 @@ function scriptedTableFragment(
 }
 
 function escapedTableCell(text: string): string {
-  return escapeMarkdownText(text)
-    .replace(/&lt;(\/?)(sup|sub)>/gi, "<$1$2>")
-    .replace(/\|/g, "\\|")
-    .replace(/\s+/g, " ")
-    .trim();
+  const allowedScriptTags = ["<sup>", "</sup>", "<sub>", "</sub>"];
+  let escaped = "";
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "<") {
+      const remainder = text.slice(index).toLowerCase();
+      const scriptTag = allowedScriptTags.find((tag) => remainder.startsWith(tag));
+      if (scriptTag) {
+        escaped += scriptTag;
+        index += scriptTag.length - 1;
+        continue;
+      }
+      escaped += "&lt;";
+      continue;
+    }
+    const character = text[index];
+    if (character === "\\") {
+      escaped += "\\\\";
+    } else if (character === "|") {
+      escaped += "\\|";
+    } else if ("[]`*_".includes(character)) {
+      escaped += `\\${character}`;
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped.replace(/\s+/g, " ").trim();
 }
 
 function recommendationTableMarkdown(

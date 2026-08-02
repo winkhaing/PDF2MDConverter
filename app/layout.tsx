@@ -22,6 +22,10 @@ export async function generateMetadata(): Promise<Metadata> {
     description,
     applicationName: "PDF2MD Converter",
     manifest: "/manifest.webmanifest",
+    icons: {
+      icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+      shortcut: "/favicon.svg",
+    },
     robots: { index: true, follow: true },
     openGraph: {
       type: "website",

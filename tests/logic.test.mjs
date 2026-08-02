@@ -4,6 +4,7 @@ import {
   blocksToMarkdown,
   inspectMarkdownFlow,
   mergeFlowingParagraphs,
+  paragraphContinuationStrength,
   safeBaseName,
 } from "../src/lib/markdown.ts";
 import {
@@ -105,6 +106,27 @@ test("does not flag intentional paragraph and section boundaries", () => {
   ].join("\n\n"));
 
   assert.deepEqual(audit, { issues: [], score: 0 });
+});
+
+test("preserves literal angle-bracket notation during continuity checks", () => {
+  assert.equal(
+    paragraphContinuationStrength("Return Array<string>.", "Next section"),
+    0,
+  );
+  assert.equal(
+    paragraphContinuationStrength(
+      'Use <span title="a > b">text</span>.',
+      "Next section",
+    ),
+    0,
+  );
+  assert.equal(
+    paragraphContinuationStrength(
+      "<u><em>Figure 1.</em></u>",
+      "Next section",
+    ),
+    0,
+  );
 });
 
 test("separates text runs that share a baseline but belong to different columns", () => {
@@ -485,14 +507,14 @@ test("converts recommendation rows into a Markdown table", () => {
     rawPage(1, [
       textLine("Table 1. Recommendations.", 53, 120, 220),
       textLine("(1) Use outcomes that matter to patients.", 53, 145, 300),
-      textLine("(2) Measure costs across the care cycle.", 53, 160, 300),
+      textLine("(2) Compare A | B, <unsafe>, and C\\D.", 53, 160, 300),
       textLine("Conclusions", 53, 200, 80, 12),
     ]),
   ]));
 
   assert.match(markdown, /\| No\. \| Recommendation \|/);
   assert.match(markdown, /\| 1 \| Use outcomes that matter to patients\. \|/);
-  assert.match(markdown, /\| 2 \| Measure costs across the care cycle\. \|/);
+  assert.match(markdown, /\| 2 \| Compare A \\\| B, &lt;unsafe>, and C\\\\D\. \|/);
   assert.match(markdown, /<u><em>Table 1\. Recommendations\.<\/em><\/u>/);
 });
 

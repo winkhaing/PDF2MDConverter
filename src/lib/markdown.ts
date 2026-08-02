@@ -16,11 +16,38 @@ export interface MarkdownFlowAudit {
   score: number;
 }
 
+const SUPPORTED_INLINE_TAGS = [
+  "<u>",
+  "</u>",
+  "<em>",
+  "</em>",
+  "<sup>",
+  "</sup>",
+  "<sub>",
+  "</sub>",
+];
+
+function stripSupportedInlineMarkup(markdown: string): string {
+  let plain = "";
+  for (let index = 0; index < markdown.length; index += 1) {
+    const remainder = markdown.slice(index).toLowerCase();
+    const supportedTag = SUPPORTED_INLINE_TAGS.find((tag) =>
+      remainder.startsWith(tag),
+    );
+    if (supportedTag) {
+      plain += " ";
+      index += supportedTag.length - 1;
+      continue;
+    }
+    plain += markdown[index];
+  }
+  return plain;
+}
+
 function plainMarkdownText(markdown: string): string {
-  return markdown
+  return stripSupportedInlineMarkup(markdown)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/<[^>]+>/g, "")
     .replace(/^[#>*+-]+\s*/gm, "")
     .replace(/\\([\[\]`*_\\])/g, "$1")
     .replace(/[*_`]/g, "")

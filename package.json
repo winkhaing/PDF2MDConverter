@@ -12,6 +12,8 @@
     "prebuild": "npm run prepare:assets",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "postbuild": "node scripts/clean-build-assets.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:dry-run": "node scripts/deploy.mjs --dry-run",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "predesktop:dev": "npm run prepare:assets",
     "desktop:dev": "vite --config vite.desktop.config.ts",

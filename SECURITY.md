@@ -25,3 +25,16 @@ reproduction steps, and a minimal non-sensitive test document when possible.
   uses a restrictive Content Security Policy.
 - Keep browsers, system webviews, and desktop builds updated. Do not use this
   tool as a malware scanner or as a substitute for reviewing the source PDF.
+- Cloudflare observability, invocation-log persistence, and trace persistence
+  are disabled in the committed Worker configuration. Cloudflare still handles
+  ordinary HTTPS connection metadata at its edge, but PDF content is processed
+  only on the user's device.
+
+## Deployment credentials
+
+Use a dedicated Cloudflare API token scoped to the PDF2MD account and limited
+to the minimum Worker-script edit permission required by Wrangler. Supply it
+through `CLOUDFLARE_API_TOKEN` from a password manager or protected CI secret.
+Do not commit tokens, use a broad global API key, or reuse a personal token
+across unrelated projects. Rotate the token after suspected exposure and
+remove obsolete Wrangler login sessions when the scoped token is working.
